@@ -1,0 +1,716 @@
+"""
+Provenance tracking utilities for the modular DataManager architecture.
+
+This module provides W3C-PROV-like provenance tracking for complete
+reproducibility and audit trail of data processing operations.
+
+Supports optional disk persistence via session_dir parameter for
+cross-session notebook export and crash recovery.
+"""
+
+import datetime
+import hashlib
+import json
+import logging
+import os
+import uuid
+import warnings
+from pathlib import Path
+
+# Import for IR support (TYPE_CHECKING to avoid circular import)
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+
+import anndata
+
+from lobster.core.utils.h5ad_utils import sanitize_value
+
+if TYPE_CHECKING:
+    from lobster.core.analysis_ir import AnalysisStep
+
+logger = logging.getLogger(__name__)
+
+
+class ProvenanceTracker:
+    """
+    W3C-PROV-like provenance tracking system.
+
+    This class tracks data processing activities, entities, and agents
+    to provide a complete audit trail and enable reproducibility.
+    """
+
+    def __init__(
+        self,
+        namespace: str = "lobster",
+        session_dir: Optional[Union[str, Path]] = None,
+    ):
+        """
+        Initialize the provenance tracker.
+
+        Args:
+            namespace: Namespace for provenance identifiers
+            session_dir: Optional path to session directory for disk persistence.
+                        When provided, activities are persisted to provenance.jsonl
+                        and restored on init. When None, persistence is disabled
+                        (backward compatible default).
+        """
+        self.namespace = namespace
+        self.activities: List[Dict[str, Any]] = []
+        self.entities: Dict[str, Dict[str, Any]] = {}
+        self.agents: Dict[str, Dict[str, Any]] = {}
+        self.logger = logger
+        self._software_versions_cache: Optional[Dict[str, str]] = None
+
+        # Disk persistence attributes
+        if session_dir is not None:
+            self.session_dir: Optional[Path] = Path(session_dir)
+            self.session_dir.mkdir(parents=True, exist_ok=True)
+            self._provenance_file: Optional[Path] = (
+                self.session_dir / "provenance.jsonl"
+            )
+            self._metadata_file: Optional[Path] = self.session_dir / "metadata.json"
+            self._created_at = datetime.datetime.now(datetime.timezone.utc)
+            # Load existing activities from disk
+            self._load_from_disk()
+        else:
+            self.session_dir = None
+            self._provenance_file = None
+            self._metadata_file = None
+            self._created_at = None
+
+    def _load_from_disk(self, path: Optional[Path] = None) -> None:
+        """
+        Load activities from JSONL file.
+
+        Implements line-independent recovery: corrupt lines are skipped with
+        warnings, remaining activities are loaded. Empty files handled gracefully.
+
+        Args:
+            path: Optional explicit path to load from. If None, uses self._provenance_file.
+                  This allows loading from a different session's provenance file
+                  during session restoration.
+        """
+        target_path = path or self._provenance_file
+        if not target_path or not target_path.exists():
+            return  # Empty file or no file = no activities
+
+        with open(target_path, "r", encoding="utf-8") as f:
+            for line_num, line in enumerate(f, start=1):
+                line = line.strip()
+                if not line:
+                    continue  # Skip empty lines
+
+                try:
+                    data = json.loads(line)
+                    version = data.pop("v", None)
+                    if version != 1:
+                        warnings.warn(
+                            f"Skipping provenance line {line_num}: "
+                            f"unknown schema version {version}"
+                        )
+                        continue
+
+                    # Reconstruct AnalysisStep from IR dict if present
+                    if data.get("ir") is not None:
+                        from lobster.core.analysis_ir import AnalysisStep
+
+                        data["ir"] = AnalysisStep.from_dict(data["ir"])
+
+                    self.activities.append(data)
+
+                except (json.JSONDecodeError, Exception) as e:
+                    warnings.warn(f"Skipping corrupt provenance line {line_num}: {e}")
+                    continue  # Line-independent recovery
+
+    def _persist_activity(self, activity: Dict[str, Any]) -> None:
+        """
+        Append activity to JSONL file with crash-safe write.
+
+        Each activity is written as a single JSON line with schema version.
+        Uses fsync for durability - at most one trailing line lost on crash.
+
+        Args:
+            activity: Activity dict to persist (already has IR serialized to dict)
+        """
+        if not self._provenance_file:
+            return  # Persistence disabled
+
+        # Safety net: recreate dir if deleted during session
+        self._provenance_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Prepare line with schema version
+        line = {"v": 1, **activity}
+
+        # Crash-safe append
+        with open(self._provenance_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(line, default=str) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+        # Update session metadata
+        self._write_session_metadata()
+
+    def _write_session_metadata(self) -> None:
+        """
+        Write metadata.json alongside provenance.jsonl.
+
+        Contains timestamps, activity count, and software versions for
+        session discovery and debugging.
+        """
+        if not self.session_dir:
+            return
+
+        metadata = {
+            "created_at": self._created_at.isoformat() if self._created_at else None,
+            "last_modified": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "activity_count": len(self.activities),
+            "software_versions": self._get_software_versions(),
+        }
+
+        with open(self._metadata_file, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+
+    @property
+    def provenance_path(self) -> Optional[Path]:
+        """
+        Path to provenance.jsonl file, or None if persistence disabled.
+
+        Enables external consumers (e.g., cloud S3 sync) to locate the
+        provenance file without knowing internal naming conventions.
+
+        Returns:
+            Path to provenance.jsonl when session_dir is set, None otherwise
+        """
+        return self._provenance_file
+
+    def get_summary(self) -> Dict[str, Any]:
+        """
+        Return compact provenance statistics for API responses.
+
+        Designed for cloud consumption without serializing full activity list.
+        Recomputes on each call (stateless, simple).
+
+        Returns:
+            Dict with keys:
+            - activity_count: int
+            - tools_used: list[str] (unique activity types)
+            - agents_used: list[str] (unique agent names)
+            - has_ir: bool (any activity has non-None IR)
+            - can_export_notebook: bool (alias for has_ir)
+        """
+        tools_used = list(set(a["type"] for a in self.activities))
+        agents_used = list(set(a["agent"] for a in self.activities))
+        has_ir = any(a.get("ir") is not None for a in self.activities)
+
+        return {
+            "activity_count": len(self.activities),
+            "tools_used": tools_used,
+            "agents_used": agents_used,
+            "has_ir": has_ir,
+            "can_export_notebook": has_ir,
+        }
+
+    def create_activity(
+        self,
+        activity_type: str,
+        agent: str,
+        inputs: Optional[List[Dict[str, Any]]] = None,
+        outputs: Optional[List[Dict[str, Any]]] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        description: Optional[str] = None,
+        ir: Optional["AnalysisStep"] = None,
+    ) -> str:
+        """
+        Create a new provenance activity record.
+
+        Args:
+            activity_type: Type of activity (e.g., 'data_loading', 'normalization')
+            agent: Agent performing the activity (e.g., 'TranscriptomicsAdapter')
+            inputs: List of input entities
+            outputs: List of output entities
+            parameters: Parameters used in the activity
+            description: Human-readable description
+            ir: Optional AnalysisStep Intermediate Representation for notebook export
+
+        Returns:
+            str: Unique activity ID
+
+        Notes:
+            The `ir` parameter enables automatic Jupyter notebook generation.
+            Services should emit AnalysisStep objects that contain complete
+            information for reproducible code generation without manual mapping.
+        """
+        activity_id = f"{self.namespace}:activity:{uuid.uuid4()}"
+        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        activity = {
+            "id": activity_id,
+            "type": activity_type,
+            "agent": agent,
+            "timestamp": timestamp,
+            "inputs": inputs or [],
+            "outputs": outputs or [],
+            "parameters": sanitize_value(parameters or {}),
+            "description": description,
+            "software_versions": self._get_software_versions(),
+        }
+
+        # Store IR if provided (serialize to dict for JSON compatibility)
+        if ir is not None:
+            activity["ir"] = ir.to_dict()
+            self.logger.debug(f"Stored IR for operation: {ir.operation}")
+        else:
+            activity["ir"] = None
+
+        self.activities.append(activity)
+        self._persist_activity(activity)
+        self.logger.debug(f"Created activity: {activity_id} ({activity_type})")
+
+        return activity_id
+
+    def create_entity(
+        self,
+        entity_type: str,
+        uri: Union[str, Path] = None,
+        checksum: Optional[str] = None,
+        format: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Create a new provenance entity record.
+
+        Args:
+            entity_type: Type of entity (e.g., 'dataset', 'plot', 'result')
+            uri: URI or path to the entity
+            checksum: Optional checksum for integrity verification
+            format: File format or data type
+            metadata: Additional metadata
+
+        Returns:
+            str: Unique entity ID
+        """
+        entity_id = f"{self.namespace}:entity:{uuid.uuid4()}"
+
+        # Calculate checksum if not provided and entity is a file
+        if checksum is None and isinstance(uri, (str, Path)):
+            checksum = self._calculate_checksum(uri)
+
+        entity = {
+            "id": entity_id,
+            "type": entity_type,
+            "uri": str(uri) if uri else None,
+            "checksum": checksum,
+            "format": format,
+            "metadata": metadata or {},
+            "created": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+
+        self.entities[entity_id] = entity
+        self.logger.debug(f"Created entity: {entity_id} ({entity_type})")
+
+        return entity_id
+
+    def create_agent(
+        self,
+        name: str,
+        agent_type: str = "software",
+        version: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> str:
+        """
+        Create a new provenance agent record.
+
+        Args:
+            name: Name of the agent
+            agent_type: Type of agent ('software', 'person', 'organization')
+            version: Version of the agent
+            description: Description of the agent
+
+        Returns:
+            str: Unique agent ID
+        """
+        agent_id = f"{self.namespace}:agent:{name.replace(' ', '_').lower()}"
+
+        if agent_id not in self.agents:
+            agent = {
+                "id": agent_id,
+                "name": name,
+                "type": agent_type,
+                "version": version,
+                "description": description,
+            }
+            self.agents[agent_id] = agent
+            self.logger.debug(f"Created agent: {agent_id}")
+
+        return agent_id
+
+    def log_data_loading(
+        self,
+        source_path: Union[str, Path],
+        output_entity_id: str,
+        adapter_name: str,
+        parameters: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Log a data loading activity.
+
+        Args:
+            source_path: Path to source data file
+            output_entity_id: ID of the loaded data entity
+            adapter_name: Name of the adapter used
+            parameters: Loading parameters
+
+        Returns:
+            str: Activity ID
+        """
+        # Create input entity for source file
+        input_entity_id = self.create_entity(
+            entity_type="source_file",
+            uri=source_path,
+            format=self._detect_format(source_path),
+        )
+
+        # Create agent for adapter
+        agent_id = self.create_agent(
+            name=adapter_name,
+            agent_type="software",
+            description="Data adapter for loading biological data",
+        )
+
+        # Create loading activity
+        activity_id = self.create_activity(
+            activity_type="data_loading",
+            agent=agent_id,
+            inputs=[{"entity": input_entity_id, "role": "source"}],
+            outputs=[{"entity": output_entity_id, "role": "loaded_data"}],
+            parameters=parameters,
+            description=f"Loaded data from {source_path} using {adapter_name}",
+        )
+
+        return activity_id
+
+    def log_data_processing(
+        self,
+        input_entity_id: str,
+        output_entity_id: str,
+        processing_type: str,
+        agent_name: str,
+        parameters: Optional[Dict[str, Any]] = None,
+        description: Optional[str] = None,
+    ) -> str:
+        """
+        Log a data processing activity.
+
+        Args:
+            input_entity_id: ID of input data entity
+            output_entity_id: ID of output data entity
+            processing_type: Type of processing (e.g., 'normalization', 'filtering')
+            agent_name: Name of the processing agent
+            parameters: Processing parameters
+            description: Description of the processing step
+
+        Returns:
+            str: Activity ID
+        """
+        # Create agent
+        agent_id = self.create_agent(
+            name=agent_name, agent_type="software", description="Data processing agent"
+        )
+
+        # Create processing activity
+        activity_id = self.create_activity(
+            activity_type=processing_type,
+            agent=agent_id,
+            inputs=[{"entity": input_entity_id, "role": "input_data"}],
+            outputs=[{"entity": output_entity_id, "role": "processed_data"}],
+            parameters=parameters,
+            description=description or f"Applied {processing_type} to data",
+        )
+
+        return activity_id
+
+    def log_data_saving(
+        self,
+        input_entity_id: str,
+        output_path: Union[str, Path],
+        backend_name: str,
+        parameters: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Log a data saving activity.
+
+        Args:
+            input_entity_id: ID of input data entity
+            output_path: Path where data was saved
+            backend_name: Name of the storage backend
+            parameters: Saving parameters
+
+        Returns:
+            str: Activity ID
+        """
+        # Create output entity for saved file
+        output_entity_id = self.create_entity(
+            entity_type="saved_file",
+            uri=output_path,
+            format=self._detect_format(output_path),
+        )
+
+        # Create agent for backend
+        agent_id = self.create_agent(
+            name=backend_name,
+            agent_type="software",
+            description="Data storage backend",
+        )
+
+        # Create saving activity
+        activity_id = self.create_activity(
+            activity_type="data_saving",
+            agent=agent_id,
+            inputs=[{"entity": input_entity_id, "role": "data_to_save"}],
+            outputs=[{"entity": output_entity_id, "role": "saved_file"}],
+            parameters=parameters,
+            description=f"Saved data to {output_path} using {backend_name}",
+        )
+
+        return activity_id
+
+    def add_to_anndata(self, adata: anndata.AnnData) -> anndata.AnnData:
+        """
+        Add provenance information to AnnData object.
+
+        Args:
+            adata: AnnData object to annotate
+
+        Returns:
+            anndata.AnnData: AnnData with provenance information
+        """
+        if "provenance" not in adata.uns:
+            adata.uns["provenance"] = {}
+
+        adata.uns["provenance"]["activities"] = self.activities.copy()
+        adata.uns["provenance"]["entities"] = self.entities.copy()
+        adata.uns["provenance"]["agents"] = self.agents.copy()
+        adata.uns["provenance"]["tracker_namespace"] = self.namespace
+
+        return adata
+
+    def extract_from_anndata(self, adata: anndata.AnnData) -> bool:
+        """
+        Extract provenance information from AnnData object.
+
+        Args:
+            adata: AnnData object containing provenance
+
+        Returns:
+            bool: True if provenance was found and extracted
+        """
+        if "provenance" not in adata.uns:
+            return False
+
+        prov_data = adata.uns["provenance"]
+
+        if "activities" in prov_data:
+            self.activities.extend(prov_data["activities"])
+
+        if "entities" in prov_data:
+            self.entities.update(prov_data["entities"])
+
+        if "agents" in prov_data:
+            self.agents.update(prov_data["agents"])
+
+        return True
+
+    def get_lineage(self, entity_id: str) -> List[Dict[str, Any]]:
+        """
+        Get the complete lineage of an entity.
+
+        Args:
+            entity_id: ID of the entity to trace
+
+        Returns:
+            List[Dict[str, Any]]: List of activities in the lineage
+        """
+        lineage = []
+
+        # Find activities that produced this entity
+        for activity in self.activities:
+            for output in activity.get("outputs", []):
+                if output.get("entity") == entity_id:
+                    lineage.append(activity)
+                    # Recursively find activities that produced the inputs
+                    for input_ref in activity.get("inputs", []):
+                        input_entity_id = input_ref.get("entity")
+                        if input_entity_id:
+                            parent_lineage = self.get_lineage(input_entity_id)
+                            lineage.extend(parent_lineage)
+                    break
+
+        return lineage
+
+    def get_all_activities(self) -> List[Dict[str, Any]]:
+        """
+        Get all provenance activities recorded in this tracker.
+
+        This method provides direct access to the complete list of activities
+        for inspection, analysis, or export. It's particularly useful for
+        system tests, debugging, and provenance auditing.
+
+        Returns:
+            List[Dict[str, Any]]: List of all activity records, each containing:
+                - id: Unique activity identifier
+                - type: Activity type (e.g., 'data_loading', 'normalization')
+                - agent: Agent that performed the activity
+                - timestamp: ISO format timestamp
+                - inputs: List of input entities
+                - outputs: List of output entities
+                - parameters: Parameters used
+                - description: Human-readable description
+                - ir: Intermediate representation (if available)
+
+        Example:
+            >>> tracker = ProvenanceTracker()
+            >>> # ... perform some operations ...
+            >>> activities = tracker.get_all_activities()
+            >>> print(f"Recorded {len(activities)} activities")
+            Recorded 5 activities
+        """
+        return self.activities
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Export provenance data as dictionary.
+
+        Returns:
+            Dict[str, Any]: Complete provenance data
+        """
+        return {
+            "namespace": self.namespace,
+            "activities": self.activities,
+            "entities": self.entities,
+            "agents": self.agents,
+            "export_timestamp": datetime.datetime.now(
+                datetime.timezone.utc
+            ).isoformat(),
+        }
+
+    def export_to_json(self, path: str) -> str:
+        """
+        Export provenance data to a JSON file.
+
+        Convenience wrapper around to_dict() that writes the provenance
+        data directly to a file on disk.
+
+        Args:
+            path: File path to write JSON output to
+
+        Returns:
+            str: The path written to
+
+        Example:
+            >>> tracker.export_to_json("/tmp/provenance.json")
+            '/tmp/provenance.json'
+        """
+        data = self.to_dict()
+        file_path = Path(path)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(file_path, "w") as f:
+            json.dump(data, f, indent=2, default=str)
+        return str(file_path)
+
+    def from_dict(self, data: Dict[str, Any]) -> None:
+        """
+        Import provenance data from dictionary.
+
+        Args:
+            data: Provenance data dictionary
+        """
+        self.namespace = data.get("namespace", self.namespace)
+        self.activities = data.get("activities", [])
+        self.entities = data.get("entities", {})
+        self.agents = data.get("agents", {})
+
+    def _calculate_checksum(self, path: Union[str, Path]) -> Optional[str]:
+        """Calculate SHA256 checksum of a file."""
+        try:
+            path = Path(path)
+            if not path.exists():
+                return None
+
+            sha256_hash = hashlib.sha256()
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(chunk)
+
+            return sha256_hash.hexdigest()
+        except Exception as e:
+            self.logger.warning(f"Failed to calculate checksum for {path}: {e}")
+            return None
+
+    def _detect_format(self, path: Union[str, Path]) -> str:
+        """Detect file format from extension."""
+        path = Path(path)
+        extension = path.suffix.lower()
+
+        format_mapping = {
+            ".h5ad": "h5ad",
+            ".h5": "h5",
+            ".csv": "csv",
+            ".tsv": "tsv",
+            ".txt": "txt",
+            ".xlsx": "excel",
+            ".xls": "excel",
+            ".h5mu": "h5mu",
+            ".png": "png",
+            ".pdf": "pdf",
+            ".svg": "svg",
+        }
+
+        return format_mapping.get(extension, "unknown")
+
+    def _get_software_versions(self) -> Dict[str, str]:
+        """Get versions of key software packages.
+
+        Results are cached for the lifetime of the tracker instance since
+        package versions do not change during a session. This avoids
+        repeated importlib.metadata lookups which are expensive at scale
+        (e.g., 10K+ activity creations).
+        """
+        if self._software_versions_cache is not None:
+            return self._software_versions_cache
+
+        from importlib.metadata import PackageNotFoundError, version
+
+        versions = {}
+
+        try:
+            versions["scanpy"] = version("scanpy")
+        except PackageNotFoundError:
+            pass
+
+        try:
+            versions["anndata"] = version("anndata")
+        except PackageNotFoundError:
+            pass
+
+        try:
+            versions["pandas"] = version("pandas")
+        except PackageNotFoundError:
+            pass
+
+        try:
+            versions["numpy"] = version("numpy")
+        except PackageNotFoundError:
+            pass
+
+        try:
+            versions["lobster"] = version("lobster-ai")
+        except PackageNotFoundError:
+            # Fallback for development installs
+            try:
+                from lobster.version import __version__
+
+                versions["lobster"] = __version__
+            except ImportError:
+                versions["lobster"] = "unknown"
+
+        self._software_versions_cache = versions
+        return versions

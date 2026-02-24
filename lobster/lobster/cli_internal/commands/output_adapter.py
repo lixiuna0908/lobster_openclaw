@@ -1,0 +1,307 @@
+"""
+Output adapter for command results - abstracts CLI vs Dashboard rendering.
+
+Design: Commands return structured data + rendering hints. OutputAdapter
+handles the actual formatting for Rich Console (CLI) or ResultsDisplay (Dashboard).
+"""
+
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Optional
+
+from rich import box
+from rich.console import Console
+from rich.table import Table
+
+
+class OutputAdapter(ABC):
+    """
+    Abstract interface for command output.
+
+    Allows commands to be UI-agnostic by providing a common API for
+    displaying text, tables, and confirmations.
+    """
+
+    @abstractmethod
+    def print(self, message: str, style: Optional[str] = None) -> None:
+        """
+        Print a message with optional style.
+
+        Args:
+            message: Message text (supports Rich markup for CLI, plain for Dashboard)
+            style: Style hint - "info", "success", "warning", "error"
+        """
+        pass
+
+    @abstractmethod
+    def print_table(self, table_data: Dict[str, Any]) -> None:
+        """
+        Render a table from structured data.
+
+        Args:
+            table_data: Dict with keys:
+                - columns: List[Dict] with "name", "style", "width" keys
+                - rows: List[List[str]] - table data
+                - title: Optional[str] - table title
+        """
+        pass
+
+    @abstractmethod
+    def confirm(self, question: str) -> bool:
+        """
+        Ask user for confirmation.
+
+        Args:
+            question: Question to ask
+
+        Returns:
+            bool: True if confirmed, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    def prompt(self, question: str, default: str = "") -> str:
+        """
+        Prompt user for text input.
+
+        Args:
+            question: Prompt text
+            default: Default value if user presses Enter
+
+        Returns:
+            str: User input or default
+        """
+        pass
+
+    @abstractmethod
+    def print_code_block(self, code: str, language: str = "python") -> None:
+        """
+        Print formatted code block.
+
+        Args:
+            code: Code content
+            language: Syntax highlighting language hint
+        """
+        pass
+
+
+class ConsoleOutputAdapter(OutputAdapter):
+    """OutputAdapter for Rich Console (CLI mode)."""
+
+    def __init__(self, console: Console):
+        self.console = console
+
+    def print(self, message: str, style: Optional[str] = None) -> None:
+        """Print with Rich markup."""
+        self.console.print(message)
+
+    def print_table(self, table_data: Dict[str, Any]) -> None:
+        """Render Rich Table."""
+        table = Table(
+            box=box.ROUNDED,
+            title=table_data.get("title"),
+            width=table_data.get("width"),  # Optional fixed table width
+        )
+
+        # Add columns
+        for col in table_data.get("columns", []):
+            table.add_column(
+                col["name"],
+                style=col.get("style", "white"),
+                width=col.get("width"),
+                max_width=col.get("max_width"),
+                overflow=col.get("overflow", "fold"),
+                justify=col.get("justify", "left"),
+            )
+
+        # Add rows
+        for row in table_data.get("rows", []):
+            table.add_row(*row)
+
+        self.console.print(table)
+
+    def prompt(self, question: str, default: str = "") -> str:
+        """Prompt user for text input using Rich Prompt."""
+        from rich.prompt import Prompt
+
+        return Prompt.ask(question, default=default, console=self.console)
+
+    def confirm(self, question: str) -> bool:
+        """Ask for confirmation using Rich Confirm."""
+        from rich.prompt import Confirm
+
+        return Confirm.ask(question)
+
+    def print_code_block(self, code: str, language: str = "python") -> None:
+        """Print syntax-highlighted code."""
+        from rich.syntax import Syntax
+
+        syntax = Syntax(code, language, theme="monokai")
+        self.console.print(syntax)
+
+
+class JsonOutputAdapter(OutputAdapter):
+    """OutputAdapter that collects structured data for JSON serialization."""
+
+    def __init__(self):
+        self.messages: list[dict] = []
+        self.tables: list[dict] = []
+        self._code_blocks: list[dict] = []
+
+    def print(self, message: str, style: Optional[str] = None) -> None:
+        """Collect message text, stripping Rich markup."""
+        clean = self._strip_markup(message)
+        entry = {"text": clean}
+        if style:
+            entry["style"] = style
+        self.messages.append(entry)
+
+    def print_table(self, table_data: Dict[str, Any]) -> None:
+        """Extract columns and rows into a serializable dict."""
+        columns = [col["name"] for col in table_data.get("columns", [])]
+        rows = table_data.get("rows", [])
+        entry: Dict[str, Any] = {"columns": columns, "rows": rows}
+        title = table_data.get("title")
+        if title:
+            entry["title"] = self._strip_markup(title)
+        self.tables.append(entry)
+
+    def prompt(self, question: str, default: str = "") -> str:
+        """Non-interactive: return default value."""
+        self.messages.append(
+            {
+                "text": f"Prompt skipped (non-interactive): {self._strip_markup(question)} -> {default!r}",
+                "style": "warning",
+            }
+        )
+        return default
+
+    def confirm(self, question: str) -> bool:
+        """Non-interactive: always returns False."""
+        self.messages.append(
+            {
+                "text": f"Confirmation skipped (non-interactive): {self._strip_markup(question)}",
+                "style": "warning",
+            }
+        )
+        return False
+
+    def print_code_block(self, code: str, language: str = "python") -> None:
+        """Collect code blocks."""
+        self._code_blocks.append({"code": code, "language": language})
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return collected data, omitting empty keys."""
+        result: Dict[str, Any] = {}
+        if self.tables:
+            result["tables"] = self.tables
+        if self.messages:
+            result["messages"] = self.messages
+        if self._code_blocks:
+            result["code_blocks"] = self._code_blocks
+        return result
+
+    @staticmethod
+    def _strip_markup(text: str) -> str:
+        """Strip Rich markup tags from text."""
+        import re
+
+        return re.sub(r"\[/?[^\]]+\]", "", text)
+
+
+class DashboardOutputAdapter(OutputAdapter):
+    """OutputAdapter for Textual ResultsDisplay (Dashboard mode)."""
+
+    def __init__(self, results_display):
+        """
+        Initialize with ResultsDisplay widget.
+
+        Args:
+            results_display: ResultsDisplay widget instance
+        """
+        self.results_display = results_display
+
+    def print(self, message: str, style: Optional[str] = None) -> None:
+        """
+        Print to ResultsDisplay as system message.
+
+        Strips Rich markup for cleaner dashboard display.
+        """
+        # Strip Rich markup for dashboard
+        clean_message = self._strip_markup(message)
+        self.results_display.append_system_message(clean_message)
+
+    def print_table(self, table_data: Dict[str, Any]) -> None:
+        """
+        Render table as formatted markdown in dashboard.
+
+        Uses GitHub-flavored markdown table syntax.
+        """
+        # Build markdown table
+        columns = table_data.get("columns", [])
+        rows = table_data.get("rows", [])
+
+        if not columns or not rows:
+            return
+
+        # Header
+        header = "| " + " | ".join(col["name"] for col in columns) + " |"
+        separator = "|" + "|".join("---" for _ in columns) + "|"
+
+        # Rows
+        table_rows = []
+        for row in rows:
+            table_rows.append("| " + " | ".join(row) + " |")
+
+        # Combine
+        title = table_data.get("title", "")
+        markdown = f"**{title}**\n\n" if title else ""
+        markdown += header + "\n" + separator + "\n" + "\n".join(table_rows)
+
+        self.results_display.append_system_message(markdown)
+
+    def prompt(self, question: str, default: str = "") -> str:
+        """
+        Dashboard doesn't support interactive prompts.
+
+        Returns default value and notifies user.
+        """
+        clean_question = self._strip_markup(question)
+        self.results_display.append_system_message(
+            f"ℹ️ Using default for '{clean_question}': {default!r}"
+        )
+        return default
+
+    def confirm(self, question: str) -> bool:
+        """
+        Dashboard doesn't support interactive confirmations.
+
+        Returns False (safe default - no destructive operations).
+        Display message to user instead.
+        """
+        clean_question = self._strip_markup(question)
+        self.results_display.append_system_message(
+            f"⚠️ Confirmation required: {clean_question}\n"
+            "Interactive confirmations not supported in dashboard. "
+            "Use CLI mode for destructive operations."
+        )
+        return False
+
+    def print_code_block(self, code: str, language: str = "python") -> None:
+        """Print code as markdown code block."""
+        markdown = f"```{language}\n{code}\n```"
+        self.results_display.append_system_message(markdown)
+
+    def _strip_markup(self, text: str) -> str:
+        """
+        Strip Rich markup tags from text.
+
+        Args:
+            text: Text with Rich markup (e.g., "[cyan]text[/cyan]")
+
+        Returns:
+            Plain text without markup
+        """
+        import re
+
+        # Remove [style] and [/style] tags
+        return re.sub(r"\[/?[^\]]+\]", "", text)
