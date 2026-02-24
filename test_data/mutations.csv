@@ -1,0 +1,5 @@
+variant_key,ID,CHROM,POS,REF,ALT,AF,maf,gene_symbol,consequence,clinvar_significance,gnomad_af,priority_score,priority_rank
+rs121913529,rs121913529,12,25245350,C,A,,0.5,KRAS,missense_variant,"not_provided,likely_pathogenic,pathogenic,association",,0.7,1
+rs113488022,rs113488022,7,140753336,A,C,,0.5,BRAF,missense_variant,"uncertain_significance,not_provided,likely_pathogenic,pathogenic",,0.7,1
+rs28934578,rs28934578,17,7675088,C,A,,0.5,TP53,missense_variant,"likely_pathogenic,pathogenic",,0.7,1
+rs429358,rs429358,19,44908684,T,C,,0.5,APOE,missense_variant,"uncertain_significance,not_provided,likely_pathogenic,pathogenic,drug_response,other,risk_factor,association,protective,established_risk_allele",0.1506,0.55,4

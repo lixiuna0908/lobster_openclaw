@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="/Users/work/000code/github"
+PAYLOAD_FILE="${1:-bio_payload.json}"
+OUT_FILE="${2:-bio_tools_invoke_result.json}"
+FASTQ_PATH="${FASTQ_PATH:-${ROOT_DIR}/test_data/sample1.fastq}"
+REF_PATH="${REF_PATH:-${ROOT_DIR}/refer_hg/hg38/hg38.fa.gz}"
+OUTDIR_PATH="${OUTDIR_PATH:-${ROOT_DIR}/test_data/out}"
+USE_LLM_TASK="${USE_LLM_TASK:-0}"
+
+TOKEN="$(python3 - <<'PY'
+import json, os, sys
+p = os.path.expanduser("~/.openclaw/openclaw.json")
+try:
+    with open(p, "r", encoding="utf-8") as f:
+        print(json.load(f)["gateway"]["auth"]["token"])
+except Exception as e:
+    print(f"[ERROR] failed to read token from {p}: {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+)"
+
+if [[ -z "${TOKEN}" ]]; then
+  echo "[ERROR] empty token" >&2
+  exit 1
+fi
+
+python3 - <<'PY' "$PAYLOAD_FILE" "$TOKEN" "$FASTQ_PATH" "$REF_PATH" "$OUTDIR_PATH" "$USE_LLM_TASK"
+import json
+import sys
+
+payload_file, token, fastq_path, ref_path, outdir_path, use_llm_task = sys.argv[1:7]
+use_llm_task = use_llm_task == "1"
+
+schema = {
+    "type": "object",
+    "properties": {
+        "ok": {"type": "boolean"},
+        "reference_header_present": {"type": "boolean"},
+        "outputs": {
+            "type": "object",
+            "properties": {
+                "vcf": {"type": "string"},
+                "report": {"type": "string"},
+            },
+            "required": ["vcf", "report"],
+            "additionalProperties": False,
+        },
+        "checks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "pass": {"type": "boolean"},
+                    "detail": {"type": "string"},
+                },
+                "required": ["name", "pass", "detail"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["ok", "reference_header_present", "outputs", "checks"],
+    "additionalProperties": False,
+}
+
+if use_llm_task:
+    llm_args = {
+        "prompt": "你是生信流程验收器。只输出符合 schema 的 JSON。检查：1) VCF 头必须有 ##reference=；2) 输出文件路径存在；3) 关键统计字段齐全。",
+        "input": {"note": "请基于上一阶段输出进行结构化验收"},
+        "schema": schema,
+    }
+    pipeline = (
+        "exec --json --shell "
+        f"'python3 run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path}' "
+        f"| clawd.invoke --url http://127.0.0.1:18789 --token {token} "
+        "--tool llm-task --action json --args-json "
+        f"'{json.dumps(llm_args, ensure_ascii=False, separators=(',', ':'))}'"
+    )
+else:
+    # Stable mode: avoid llm-task schema variability.
+    pipeline = (
+        "exec --json --shell "
+        f"'python3 run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path}'"
+    )
+
+payload = {
+    "tool": "lobster",
+    "args": {
+        "action": "run",
+        "cwd": ".",
+        "timeoutMs": 300000,
+        "maxStdoutBytes": 1048576,
+        "pipeline": pipeline,
+    },
+}
+
+with open(payload_file, "w", encoding="utf-8") as f:
+    json.dump(payload, f, ensure_ascii=False, indent=2)
+
+print(f"[INFO] payload generated: {payload_file}")
+print(f"[INFO] mode: {'llm-task-validation' if use_llm_task else 'stable'}")
+PY
+
+echo "[INFO] invoking generated payload..."
+"${ROOT_DIR}/run_payload.sh" "$PAYLOAD_FILE" "$OUT_FILE"

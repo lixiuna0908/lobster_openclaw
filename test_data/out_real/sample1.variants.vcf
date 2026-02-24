@@ -1,0 +1,4 @@
+##fileformat=VCFv4.2
+##reference=/Users/work/000code/github/refer_hg/hg38/hg38.fa.gz
+##source=toy_fastq_variant_caller
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO

@@ -1,0 +1,13 @@
+##fileformat=VCFv4.2
+##source=toy_fastq_variant_caller
+##contig=<ID=12>
+##contig=<ID=17>
+##contig=<ID=19>
+##contig=<ID=7>
+##INFO=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample1
+12	25245350	rs121913529	C	A	76.0	PASS	AF=0.7000	GT	0/1
+7	140753336	rs113488022	A	C	76.0	PASS	AF=0.7000	GT	0/1
+17	7675088	rs28934578	C	A	76.0	PASS	AF=0.7000	GT	0/1
+19	44908684	rs429358	T	C	76.0	PASS	AF=0.7000	GT	0/1
