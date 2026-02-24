@@ -1,0 +1,2 @@
+refer_hg/** filter=lfs diff=lfs merge=lfs -text
+test_data/out_dingtalk/ref/** filter=lfs diff=lfs merge=lfs -text
