@@ -1,0 +1,10 @@
+{
+  "tool": "lobster",
+  "args": {
+    "action": "run",
+    "cwd": ".",
+    "timeoutMs": 300000,
+    "maxStdoutBytes": 1048576,
+    "pipeline": "exec --json --shell 'python3 run_bioinformatics_analysis.py --fastq /Users/work/000code/github/test_data/sample1.fastq --ref /Users/work/000code/github/refer_hg/hg38/hg38.fa.gz --outdir /Users/work/000code/github/test_data/out_dingtalk'"
+  }
+}

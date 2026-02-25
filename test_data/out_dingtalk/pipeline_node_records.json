@@ -1,0 +1,27 @@
+{
+  "pipeline_id": "bio-d65d648625",
+  "sample_id": "sample1",
+  "started_at": "2026-02-24T16:14:11.437086+00:00",
+  "finished_at": "2026-02-24T16:14:11.437875+00:00",
+  "status": "failed",
+  "nodes": [
+    {
+      "id": 1,
+      "name": "tool_check",
+      "status": "running",
+      "started_at": "2026-02-24T16:14:11.437238+00:00",
+      "_t0": 1771949651.4372401,
+      "inputs": {
+        "tools": [
+          "bwa",
+          "samtools",
+          "gatk"
+        ]
+      },
+      "outputs": {},
+      "stats": {},
+      "commands": []
+    }
+  ],
+  "error": "Required tool not found in PATH: gatk"
+}
