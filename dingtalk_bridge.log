@@ -1,0 +1,82 @@
+Requirement already satisfied: fastapi>=0.112.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from -r /Users/work/000code/github/requirements.txt (line 1)) (0.133.0)
+Requirement already satisfied: uvicorn>=0.30.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from uvicorn[standard]>=0.30.0->-r /Users/work/000code/github/requirements.txt (line 2)) (0.41.0)
+Requirement already satisfied: requests>=2.32.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from -r /Users/work/000code/github/requirements.txt (line 3)) (2.32.5)
+Requirement already satisfied: pycryptodome>=3.20.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from -r /Users/work/000code/github/requirements.txt (line 4)) (3.23.0)
+Requirement already satisfied: dingtalk-stream>=0.24.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from -r /Users/work/000code/github/requirements.txt (line 5)) (0.24.3)
+Requirement already satisfied: starlette>=0.40.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from fastapi>=0.112.0->-r /Users/work/000code/github/requirements.txt (line 1)) (0.52.1)
+Requirement already satisfied: pydantic>=2.7.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from fastapi>=0.112.0->-r /Users/work/000code/github/requirements.txt (line 1)) (2.12.5)
+Requirement already satisfied: typing-extensions>=4.8.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from fastapi>=0.112.0->-r /Users/work/000code/github/requirements.txt (line 1)) (4.15.0)
+Requirement already satisfied: typing-inspection>=0.4.2 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from fastapi>=0.112.0->-r /Users/work/000code/github/requirements.txt (line 1)) (0.4.2)
+Requirement already satisfied: annotated-doc>=0.0.2 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from fastapi>=0.112.0->-r /Users/work/000code/github/requirements.txt (line 1)) (0.0.4)
+Requirement already satisfied: click>=7.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from uvicorn>=0.30.0->uvicorn[standard]>=0.30.0->-r /Users/work/000code/github/requirements.txt (line 2)) (8.3.1)
+Requirement already satisfied: h11>=0.8 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from uvicorn>=0.30.0->uvicorn[standard]>=0.30.0->-r /Users/work/000code/github/requirements.txt (line 2)) (0.16.0)
+Requirement already satisfied: charset_normalizer<4,>=2 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from requests>=2.32.0->-r /Users/work/000code/github/requirements.txt (line 3)) (3.4.4)
+Requirement already satisfied: idna<4,>=2.5 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from requests>=2.32.0->-r /Users/work/000code/github/requirements.txt (line 3)) (3.11)
+Requirement already satisfied: urllib3<3,>=1.21.1 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from requests>=2.32.0->-r /Users/work/000code/github/requirements.txt (line 3)) (2.6.3)
+Requirement already satisfied: certifi>=2017.4.17 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from requests>=2.32.0->-r /Users/work/000code/github/requirements.txt (line 3)) (2026.1.4)
+Requirement already satisfied: aiohttp>=3.10.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from dingtalk-stream>=0.24.0->-r /Users/work/000code/github/requirements.txt (line 5)) (3.13.3)
+Requirement already satisfied: websockets>=11.0.2 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from dingtalk-stream>=0.24.0->-r /Users/work/000code/github/requirements.txt (line 5)) (16.0)
+Requirement already satisfied: aiohappyeyeballs>=2.5.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from aiohttp>=3.10.0->dingtalk-stream>=0.24.0->-r /Users/work/000code/github/requirements.txt (line 5)) (2.6.1)
+Requirement already satisfied: aiosignal>=1.4.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from aiohttp>=3.10.0->dingtalk-stream>=0.24.0->-r /Users/work/000code/github/requirements.txt (line 5)) (1.4.0)
+Requirement already satisfied: attrs>=17.3.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from aiohttp>=3.10.0->dingtalk-stream>=0.24.0->-r /Users/work/000code/github/requirements.txt (line 5)) (25.4.0)
+Requirement already satisfied: frozenlist>=1.1.1 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from aiohttp>=3.10.0->dingtalk-stream>=0.24.0->-r /Users/work/000code/github/requirements.txt (line 5)) (1.8.0)
+Requirement already satisfied: multidict<7.0,>=4.5 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from aiohttp>=3.10.0->dingtalk-stream>=0.24.0->-r /Users/work/000code/github/requirements.txt (line 5)) (6.7.1)
+Requirement already satisfied: propcache>=0.2.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from aiohttp>=3.10.0->dingtalk-stream>=0.24.0->-r /Users/work/000code/github/requirements.txt (line 5)) (0.4.1)
+Requirement already satisfied: yarl<2.0,>=1.17.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from aiohttp>=3.10.0->dingtalk-stream>=0.24.0->-r /Users/work/000code/github/requirements.txt (line 5)) (1.22.0)
+Requirement already satisfied: annotated-types>=0.6.0 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from pydantic>=2.7.0->fastapi>=0.112.0->-r /Users/work/000code/github/requirements.txt (line 1)) (0.7.0)
+Requirement already satisfied: pydantic-core==2.41.5 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from pydantic>=2.7.0->fastapi>=0.112.0->-r /Users/work/000code/github/requirements.txt (line 1)) (2.41.5)
+Requirement already satisfied: anyio<5,>=3.6.2 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from starlette>=0.40.0->fastapi>=0.112.0->-r /Users/work/000code/github/requirements.txt (line 1)) (4.12.1)
+Requirement already satisfied: httptools>=0.6.3 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from uvicorn[standard]>=0.30.0->-r /Users/work/000code/github/requirements.txt (line 2)) (0.7.1)
+Requirement already satisfied: python-dotenv>=0.13 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from uvicorn[standard]>=0.30.0->-r /Users/work/000code/github/requirements.txt (line 2)) (1.2.1)
+Requirement already satisfied: pyyaml>=5.1 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from uvicorn[standard]>=0.30.0->-r /Users/work/000code/github/requirements.txt (line 2)) (6.0.3)
+Requirement already satisfied: uvloop>=0.15.1 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from uvicorn[standard]>=0.30.0->-r /Users/work/000code/github/requirements.txt (line 2)) (0.22.1)
+Requirement already satisfied: watchfiles>=0.20 in ./.venv_dingtalk_bridge/lib/python3.13/site-packages (from uvicorn[standard]>=0.30.0->-r /Users/work/000code/github/requirements.txt (line 2)) (1.1.1)
+[INFO] Starting DingTalk Stream bridge...
+2026-02-27 19:15:07,627 dingtalk_stream.client INFO     open connection, url=https://api.dingtalk.com/v1.0/gateway/connections/open [stream.py:149]
+2026-02-27 19:15:11,229 dingtalk_stream.client INFO     endpoint is {'endpoint': 'wss://wss-open-connection-union.dingtalk.com:443/connect', 'ticket': '94a6f3a3-13cd-11f1-884b-5a20030ba585'} [stream.py:71]
+2026-02-27 19:24:00,113 dingtalk_stream.client INFO     [TOPIC] type=CALLBACK topic=/v1.0/im/bot/messages/get [dingtalk_stream_bridge.py:483]
+[INFO] DingTalk Stream bridge starting...
+[DEBUG] payload dumped: /Users/work/000code/github/dingtalk_runtime/incoming_20260227_192400_114.json
+[DEBUG] incoming message: keys=['senderPlatform', 'conversationId', 'chatbotCorpId', 'chatbotUserId', 'openThreadId', 'msgId', 'senderNick', 'isAdmin', 'senderStaffId', 'sessionWebhookExpiredTime', 'createAt', 'senderCorpId'] msgtype=text conversationType=1 text='@fastq处理 FASTQ=/Users/work/000code/github/test_data/sample1.fastq REF=/Users/work/000code/github/refer_hg/hg38/hg38.fa 帮我运行'
+2026-02-27 20:03:27,699 dingtalk_stream.client ERROR    [start] network exception, error=no close frame received or sent [stream.py:84]
+2026-02-27 20:03:37,701 dingtalk_stream.client INFO     open connection, url=https://api.dingtalk.com/v1.0/gateway/connections/open [stream.py:149]
+2026-02-27 20:03:40,612 dingtalk_stream.client INFO     endpoint is {'endpoint': 'wss://wss-open-connection-union.dingtalk.com:443/connect', 'ticket': '5ae0964b-13d4-11f1-bee8-0eb3b764c0bb'} [stream.py:71]
+2026-02-27 20:32:10,155 dingtalk_stream.client INFO     [TOPIC] type=CALLBACK topic=/v1.0/im/bot/messages/get [dingtalk_stream_bridge.py:483]
+[DEBUG] payload dumped: /Users/work/000code/github/dingtalk_runtime/incoming_20260227_203210_155.json
+[DEBUG] incoming message: keys=['senderPlatform', 'conversationId', 'chatbotCorpId', 'chatbotUserId', 'openThreadId', 'msgId', 'senderNick', 'isAdmin', 'senderStaffId', 'sessionWebhookExpiredTime', 'createAt', 'senderCorpId'] msgtype=text conversationType=1 text='@fastq处理 FASTQ=/Users/work/000code/github/test_data/sample1.fastq REF=/Users/work/000code/github/refer_hg/hg38/hg38.fa 帮我运行'
+2026-02-27 20:35:41,818 dingtalk_stream.client INFO     [TOPIC] type=CALLBACK topic=/v1.0/im/bot/messages/get [dingtalk_stream_bridge.py:483]
+[DEBUG] payload dumped: /Users/work/000code/github/dingtalk_runtime/incoming_20260227_203541_819.json
+[DEBUG] incoming message: keys=['senderPlatform', 'conversationId', 'chatbotCorpId', 'chatbotUserId', 'openThreadId', 'msgId', 'senderNick', 'isAdmin', 'senderStaffId', 'sessionWebhookExpiredTime', 'createAt', 'senderCorpId'] msgtype=text conversationType=1 text='@fastq处理 FASTQ=/Users/work/000code/github/test_data/sample1.fastq REF=/Users/work/000code/github/refer_hg/hg38/hg38.fa 帮我运行'
+2026-02-27 20:50:16,799 dingtalk_stream.client INFO     [TOPIC] type=CALLBACK topic=/v1.0/im/bot/messages/get [dingtalk_stream_bridge.py:483]
+[DEBUG] payload dumped: /Users/work/000code/github/dingtalk_runtime/incoming_20260227_205016_799.json
+[DEBUG] incoming message: keys=['senderPlatform', 'conversationId', 'chatbotCorpId', 'chatbotUserId', 'openThreadId', 'msgId', 'senderNick', 'isAdmin', 'senderStaffId', 'sessionWebhookExpiredTime', 'createAt', 'senderCorpId'] msgtype=text conversationType=1 text='@fastq处理 FASTQ=/Users/work/000code/github/test_data/sample1.fastq REF=/Users/work/000code/github/refer_hg/hg38/hg38.fa 帮我运行'
+2026-02-27 20:56:03,985 dingtalk_stream.client ERROR    [start] network exception, error=no close frame received or sent [stream.py:84]
+2026-02-27 20:56:13,986 dingtalk_stream.client INFO     open connection, url=https://api.dingtalk.com/v1.0/gateway/connections/open [stream.py:149]
+2026-02-27 20:56:14,313 dingtalk_stream.client ERROR    open connection failed, error=HTTPSConnectionPool(host='api.dingtalk.com', port=443): Max retries exceeded with url: /v1.0/gateway/connections/open (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)'))), response.text= [stream.py:179]
+2026-02-27 20:56:14,313 dingtalk_stream.client ERROR    open connection failed [stream.py:68]
+2026-02-27 20:56:24,316 dingtalk_stream.client INFO     open connection, url=https://api.dingtalk.com/v1.0/gateway/connections/open [stream.py:149]
+2026-02-27 20:56:24,646 dingtalk_stream.client ERROR    open connection failed, error=HTTPSConnectionPool(host='api.dingtalk.com', port=443): Max retries exceeded with url: /v1.0/gateway/connections/open (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)'))), response.text= [stream.py:179]
+2026-02-27 20:56:24,646 dingtalk_stream.client ERROR    open connection failed [stream.py:68]
+2026-02-27 20:56:34,648 dingtalk_stream.client INFO     open connection, url=https://api.dingtalk.com/v1.0/gateway/connections/open [stream.py:149]
+2026-02-27 20:56:34,983 dingtalk_stream.client ERROR    open connection failed, error=HTTPSConnectionPool(host='api.dingtalk.com', port=443): Max retries exceeded with url: /v1.0/gateway/connections/open (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)'))), response.text= [stream.py:179]
+2026-02-27 20:56:34,983 dingtalk_stream.client ERROR    open connection failed [stream.py:68]
+2026-02-27 20:56:44,985 dingtalk_stream.client INFO     open connection, url=https://api.dingtalk.com/v1.0/gateway/connections/open [stream.py:149]
+2026-02-27 20:56:45,311 dingtalk_stream.client ERROR    open connection failed, error=HTTPSConnectionPool(host='api.dingtalk.com', port=443): Max retries exceeded with url: /v1.0/gateway/connections/open (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)'))), response.text= [stream.py:179]
+2026-02-27 20:56:45,311 dingtalk_stream.client ERROR    open connection failed [stream.py:68]
+2026-02-27 20:56:55,312 dingtalk_stream.client INFO     open connection, url=https://api.dingtalk.com/v1.0/gateway/connections/open [stream.py:149]
+2026-02-27 20:56:55,645 dingtalk_stream.client ERROR    open connection failed, error=HTTPSConnectionPool(host='api.dingtalk.com', port=443): Max retries exceeded with url: /v1.0/gateway/connections/open (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)'))), response.text= [stream.py:179]
+2026-02-27 20:56:55,645 dingtalk_stream.client ERROR    open connection failed [stream.py:68]
+2026-02-27 20:57:05,646 dingtalk_stream.client INFO     open connection, url=https://api.dingtalk.com/v1.0/gateway/connections/open [stream.py:149]
+2026-02-27 20:57:05,978 dingtalk_stream.client ERROR    open connection failed, error=HTTPSConnectionPool(host='api.dingtalk.com', port=443): Max retries exceeded with url: /v1.0/gateway/connections/open (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)'))), response.text= [stream.py:179]
+2026-02-27 20:57:05,978 dingtalk_stream.client ERROR    open connection failed [stream.py:68]
+2026-02-27 20:57:15,980 dingtalk_stream.client INFO     open connection, url=https://api.dingtalk.com/v1.0/gateway/connections/open [stream.py:149]
+2026-02-27 20:57:16,311 dingtalk_stream.client ERROR    open connection failed, error=HTTPSConnectionPool(host='api.dingtalk.com', port=443): Max retries exceeded with url: /v1.0/gateway/connections/open (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)'))), response.text= [stream.py:179]
+2026-02-27 20:57:16,311 dingtalk_stream.client ERROR    open connection failed [stream.py:68]
+2026-02-27 20:57:26,312 dingtalk_stream.client INFO     open connection, url=https://api.dingtalk.com/v1.0/gateway/connections/open [stream.py:149]
+2026-02-27 20:57:26,636 dingtalk_stream.client ERROR    open connection failed, error=HTTPSConnectionPool(host='api.dingtalk.com', port=443): Max retries exceeded with url: /v1.0/gateway/connections/open (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)'))), response.text= [stream.py:179]
+2026-02-27 20:57:26,636 dingtalk_stream.client ERROR    open connection failed [stream.py:68]
+2026-02-27 20:57:36,637 dingtalk_stream.client INFO     open connection, url=https://api.dingtalk.com/v1.0/gateway/connections/open [stream.py:149]
+2026-02-27 20:57:36,968 dingtalk_stream.client ERROR    open connection failed, error=HTTPSConnectionPool(host='api.dingtalk.com', port=443): Max retries exceeded with url: /v1.0/gateway/connections/open (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)'))), response.text= [stream.py:179]
+2026-02-27 20:57:36,968 dingtalk_stream.client ERROR    open connection failed [stream.py:68]
+2026-02-27 20:57:46,969 dingtalk_stream.client INFO     open connection, url=https://api.dingtalk.com/v1.0/gateway/connections/open [stream.py:149]
+2026-02-27 20:57:48,558 dingtalk_stream.client INFO     endpoint is {'endpoint': 'wss://wss-open-connection-union.dingtalk.com:443/connect', 'ticket': 'eadffc29-13db-11f1-8d8a-de809d1c6511'} [stream.py:71]

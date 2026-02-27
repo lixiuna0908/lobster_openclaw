@@ -5,3 +5,12 @@ chen/
 
 refer_hg/hg38/hg38.fa
 test_data/out_dingtalk/ref/
+
+refer_hg
+git-hooks
+dingtalk_runtime
+openclaw/git-hooks
+test_data
+.venv_dingtalk_bridge
+openclaw/.pi
+openclaw/.vscode

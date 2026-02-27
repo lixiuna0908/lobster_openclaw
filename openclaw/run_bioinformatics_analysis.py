@@ -6,11 +6,12 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TextIO
 
 
 def _ensure_runtime_path() -> None:
@@ -91,7 +92,7 @@ class NodeRecorder:
 
 def _run(cmd: List[str], node: Optional[Dict[str, Any]] = None, cwd: Optional[Path] = None) -> int:
     t0 = time.time()
-    subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)
+    subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True, stdout=sys.stderr)
     elapsed_ms = int((time.time() - t0) * 1000)
     if node is not None:
         node["commands"].append({"cmd": cmd, "elapsed_ms": elapsed_ms})
@@ -123,8 +124,12 @@ def _run_bwa_index_with_progress(bwa_bin: str, ref_fa: Path, outdir: Path, node:
         bufsize=1,
     )
     assert proc.stderr is not None
+    stderr_lines = []
     try:
         for line in proc.stderr:
+            stderr_lines.append(line)
+            if len(stderr_lines) > 50:
+                stderr_lines.pop(0)
             m_len = re.search(r"textLength=(\d+)", line)
             if m_len:
                 text_length = int(m_len.group(1))
@@ -140,7 +145,8 @@ def _run_bwa_index_with_progress(bwa_bin: str, ref_fa: Path, outdir: Path, node:
     finally:
         ret = proc.wait()
         if ret != 0:
-            raise subprocess.CalledProcessError(ret, cmd)
+            err_msg = "".join(stderr_lines)
+            raise RuntimeError(f"Command {cmd} returned non-zero exit status {ret}. Stderr: {err_msg}")
     _write_bwa_index_progress(outdir, 100)
     elapsed_ms = int((time.time() - t0) * 1000)
     if node is not None:
@@ -180,9 +186,9 @@ def _resolve_ref_input(ref: str) -> Path:
 
 
 def _materialize_reference(ref_in: Path, outdir: Path) -> Path:
-    ref_dir = outdir / "ref"
-    ref_dir.mkdir(parents=True, exist_ok=True)
     if ref_in.suffix == ".gz":
+        ref_dir = outdir / "ref"
+        ref_dir.mkdir(parents=True, exist_ok=True)
         ref_fa = ref_dir / ref_in.stem
         if not ref_fa.exists():
             with gzip.open(ref_in, "rt", encoding="utf-8", errors="replace") as src, ref_fa.open(
@@ -191,10 +197,7 @@ def _materialize_reference(ref_in: Path, outdir: Path) -> Path:
                 shutil.copyfileobj(src, dst)
         return ref_fa.resolve()
     if ref_in.suffix in {".fa", ".fasta", ".fna"}:
-        ref_fa = ref_dir / ref_in.name
-        if ref_fa.resolve() != ref_in.resolve() and not ref_fa.exists():
-            shutil.copy2(ref_in, ref_fa)
-        return ref_fa.resolve()
+        return ref_in.resolve()
     raise ValueError(f"Unsupported reference extension: {ref_in}")
 
 
@@ -236,6 +239,261 @@ def _count_vcf_variants(vcf_path: Path) -> int:
             if line and not line.startswith("#"):
                 count += 1
     return count
+
+
+def _count_pass_variants(vcf_path: Path) -> int:
+    count = 0
+    with vcf_path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if not line or line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 7:
+                continue
+            filt = parts[6].strip()
+            if filt in {"PASS", "."}:
+                count += 1
+    return count
+
+
+def _open_text_maybe_gz(path: Path) -> TextIO:
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt", encoding="utf-8", errors="replace")
+    return path.open("r", encoding="utf-8", errors="replace")
+
+
+def _fastq_basic_stats(fastq_path: Path) -> Dict[str, Any]:
+    reads = 0
+    total_bases = 0
+    n_bases = 0
+    min_len = 0
+    max_len = 0
+    malformed_lines = 0
+
+    with _open_text_maybe_gz(fastq_path) as fh:
+        for i, line in enumerate(fh):
+            if i % 4 != 1:
+                continue
+            seq = line.strip()
+            if not seq:
+                malformed_lines += 1
+                continue
+            seq_len = len(seq)
+            reads += 1
+            total_bases += seq_len
+            n_bases += seq.upper().count("N")
+            if reads == 1:
+                min_len = seq_len
+                max_len = seq_len
+            else:
+                min_len = min(min_len, seq_len)
+                max_len = max(max_len, seq_len)
+
+    mean_len = (total_bases / reads) if reads else 0.0
+    n_rate = (n_bases / total_bases) if total_bases else 0.0
+    return {
+        "reads": reads,
+        "total_bases": total_bases,
+        "n_bases": n_bases,
+        "n_rate": round(n_rate, 6),
+        "mean_read_length": round(mean_len, 2),
+        "min_read_length": min_len,
+        "max_read_length": max_len,
+        "malformed_lines": malformed_lines,
+    }
+
+
+def _run_raw_qc(
+    fastq1: Path,
+    fastq2: Optional[Path],
+    outdir: Path,
+    *,
+    qc_gate: bool,
+    max_n_rate: float,
+) -> Dict[str, Any]:
+    qc_dir = outdir / "qc"
+    qc_dir.mkdir(parents=True, exist_ok=True)
+    r1 = _fastq_basic_stats(fastq1)
+    r2 = _fastq_basic_stats(fastq2) if fastq2 else None
+    total_bases = r1["total_bases"] + (r2["total_bases"] if r2 else 0)
+    total_n_bases = r1["n_bases"] + (r2["n_bases"] if r2 else 0)
+    merged_n_rate = (total_n_bases / total_bases) if total_bases else 0.0
+    payload = {
+        "raw_fastq_qc": {
+            "r1": r1,
+            "r2": r2,
+            "overall": {
+                "total_reads": r1["reads"] + (r2["reads"] if r2 else 0),
+                "total_bases": total_bases,
+                "n_rate": round(merged_n_rate, 6),
+                "max_n_rate_threshold": max_n_rate,
+            },
+        }
+    }
+    raw_qc_path = qc_dir / "raw_qc.json"
+    raw_qc_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if qc_gate and merged_n_rate > max_n_rate:
+        raise RuntimeError(
+            f"Raw FASTQ QC gate failed: n_rate={merged_n_rate:.6f} > max_n_rate={max_n_rate:.6f}"
+        )
+    return {
+        "raw_qc_path": str(raw_qc_path),
+        "r1": r1,
+        "r2": r2,
+        "overall": payload["raw_fastq_qc"]["overall"],
+    }
+
+
+def _trim_fastq(
+    fastp_bin: str,
+    fastq1: Path,
+    fastq2: Optional[Path],
+    outdir: Path,
+    *,
+    min_read_length: int,
+    min_qscore: int,
+    threads: int,
+    node: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    clean_dir = outdir / "clean"
+    qc_dir = outdir / "qc"
+    clean_dir.mkdir(parents=True, exist_ok=True)
+    qc_dir.mkdir(parents=True, exist_ok=True)
+
+    clean_r1 = clean_dir / "clean_R1.fastq.gz"
+    clean_r2 = clean_dir / "clean_R2.fastq.gz"
+    fastp_json = qc_dir / "fastp.json"
+    fastp_html = qc_dir / "fastp.html"
+
+    cmd = [
+        fastp_bin,
+        "-i",
+        str(fastq1),
+        "-o",
+        str(clean_r1),
+        "-q",
+        str(min_qscore),
+        "-l",
+        str(min_read_length),
+        "-w",
+        str(max(1, threads)),
+        "-j",
+        str(fastp_json),
+        "-h",
+        str(fastp_html),
+    ]
+    if fastq2:
+        cmd.extend(["-I", str(fastq2), "-O", str(clean_r2), "--detect_adapter_for_pe"])
+    _run(cmd, node=node)
+    return {
+        "clean_r1": str(clean_r1),
+        "clean_r2": str(clean_r2) if fastq2 else "",
+        "fastp_json": str(fastp_json),
+        "fastp_html": str(fastp_html),
+    }
+
+
+def _run_post_trim_qc(
+    raw_qc: Dict[str, Any],
+    clean_r1: Path,
+    clean_r2: Optional[Path],
+    outdir: Path,
+) -> Dict[str, Any]:
+    qc_dir = outdir / "qc"
+    qc_dir.mkdir(parents=True, exist_ok=True)
+    c1 = _fastq_basic_stats(clean_r1)
+    c2 = _fastq_basic_stats(clean_r2) if clean_r2 else None
+
+    raw_total_reads = int(raw_qc["overall"]["total_reads"])
+    clean_total_reads = c1["reads"] + (c2["reads"] if c2 else 0)
+    read_retention = (clean_total_reads / raw_total_reads) if raw_total_reads else 0.0
+
+    raw_total_bases = int(raw_qc["overall"]["total_bases"])
+    clean_total_bases = c1["total_bases"] + (c2["total_bases"] if c2 else 0)
+    base_retention = (clean_total_bases / raw_total_bases) if raw_total_bases else 0.0
+
+    clean_n_bases = c1["n_bases"] + (c2["n_bases"] if c2 else 0)
+    clean_n_rate = (clean_n_bases / clean_total_bases) if clean_total_bases else 0.0
+    raw_n_rate = float(raw_qc["overall"]["n_rate"])
+
+    payload = {
+        "post_trim_qc": {
+            "r1": c1,
+            "r2": c2,
+            "overall": {
+                "total_reads": clean_total_reads,
+                "total_bases": clean_total_bases,
+                "n_rate": round(clean_n_rate, 6),
+                "raw_n_rate": raw_n_rate,
+                "n_rate_delta": round(raw_n_rate - clean_n_rate, 6),
+                "read_retention": round(read_retention, 6),
+                "base_retention": round(base_retention, 6),
+            },
+        }
+    }
+    post_qc_path = qc_dir / "post_trim_qc.json"
+    post_qc_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "post_qc_path": str(post_qc_path),
+        "overall": payload["post_trim_qc"]["overall"],
+    }
+
+
+def _mark_duplicates(
+    gatk_bin: str,
+    sorted_bam: Path,
+    sample: str,
+    outdir: Path,
+    node: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    dedup_bam = outdir / f"{sample}.dedup.bam"
+    metrics = outdir / f"{sample}.dedup.metrics.txt"
+    cmd = [
+        gatk_bin,
+        "MarkDuplicates",
+        "-I",
+        str(sorted_bam),
+        "-O",
+        str(dedup_bam),
+        "-M",
+        str(metrics),
+        "--CREATE_INDEX",
+        "true",
+    ]
+    _run(cmd, node=node)
+    return {
+        "dedup_bam": str(dedup_bam),
+        "dedup_bai": str(Path(str(dedup_bam) + ".bai")),
+        "dedup_metrics": str(metrics),
+    }
+
+
+def _filter_variants_hard(
+    gatk_bin: str,
+    raw_vcf: Path,
+    sample: str,
+    outdir: Path,
+    node: Optional[Dict[str, Any]] = None,
+) -> Path:
+    filtered_vcf = outdir / f"{sample}.variants.filtered.vcf"
+    cmd = [
+        gatk_bin,
+        "VariantFiltration",
+        "-V",
+        str(raw_vcf),
+        "-O",
+        str(filtered_vcf),
+        "--filter-name",
+        "LOW_QUAL",
+        "--filter-expression",
+        "QUAL < 30.0",
+        "--filter-name",
+        "LOW_DP",
+        "--filter-expression",
+        "DP < 10",
+    ]
+    _run(cmd, node=node)
+    return filtered_vcf
 
 
 def _parse_info(info: str) -> Dict[str, str]:
@@ -370,9 +628,11 @@ def _write_report(
         f"- Reference: `{ref_fa}`",
         "",
         "## Pipeline",
+        "- FASTQ QC + trimming: fastp",
         "- Alignment: BWA-MEM",
-        "- BAM processing: samtools sort/index",
+        "- BAM processing: samtools sort/index + GATK MarkDuplicates",
         "- Variant calling: GATK HaplotypeCaller",
+        "- Variant filtering: GATK VariantFiltration (hard-filter)",
         "",
         "## Outputs",
         f"- BAM: `{bam_path}`",
@@ -401,17 +661,33 @@ def _write_report(
 def main() -> int:
     _ensure_runtime_path()
     parser = argparse.ArgumentParser(description="Production FASTQ -> VCF pipeline (BWA/GATK).")
-    parser.add_argument("--fastq", required=True, help="FASTQ R1 path")
+    parser.add_argument("--fastq", required=False, help="FASTQ R1 path (can be passed via env FASTQ)")
     parser.add_argument("--fastq2", default=None, help="FASTQ R2 path (optional)")
-    parser.add_argument("--ref", required=True, help="Reference genome FASTA(.gz) path")
-    parser.add_argument("--outdir", required=True, help="Output directory")
+    parser.add_argument("--ref", required=False, help="Reference genome FASTA(.gz) path (can be passed via env REF)")
+    parser.add_argument("--outdir", required=False, help="Output directory (can be passed via env OUTDIR)")
     parser.add_argument("--sample-id", default="sample1", help="Sample ID")
     parser.add_argument("--threads", type=int, default=8, help="Thread count")
+    parser.add_argument("--min-read-length", type=int, default=50, help="Minimum read length after trimming")
+    parser.add_argument("--min-qscore", type=int, default=20, help="Minimum quality threshold for trimming")
+    parser.add_argument("--max-n-rate", type=float, default=0.1, help="Maximum allowed N base ratio in FASTQ")
+    parser.add_argument("--qc-gate", action="store_true", help="Fail pipeline when QC threshold is not met")
     args = parser.parse_args()
 
-    fastq1 = Path(args.fastq).resolve()
+    fastq_path = args.fastq or os.environ.get("FASTQ")
+    if not fastq_path:
+        parser.error("--fastq or FASTQ env var is required")
+        
+    ref_path = args.ref or os.environ.get("REF")
+    if not ref_path:
+        parser.error("--ref or REF env var is required")
+        
+    outdir_path = args.outdir or os.environ.get("OUTDIR")
+    if not outdir_path:
+        parser.error("--outdir or OUTDIR env var is required")
+
+    fastq1 = Path(fastq_path).resolve()
     fastq2 = Path(args.fastq2).resolve() if args.fastq2 else None
-    outdir = Path(args.outdir).resolve()
+    outdir = Path(outdir_path).resolve()
     outdir.mkdir(parents=True, exist_ok=True)
     recorder = NodeRecorder(
         pipeline_id=f"bio-{uuid.uuid4().hex[:10]}",
@@ -420,10 +696,12 @@ def main() -> int:
     )
 
     try:
-        n_tools = recorder.start("tool_check", {"tools": ["bwa", "samtools", "gatk"]})
+        n_tools = recorder.start("tool_check", {"tools": ["bwa", "samtools", "gatk", "fastp", "bcftools"]})
         bwa_bin = _resolve_tool("bwa")
         samtools_bin = _resolve_tool("samtools")
         gatk_bin = _resolve_tool("gatk")
+        fastp_bin = _resolve_tool("fastp")
+        _resolve_tool("bcftools")
         recorder.finish(n_tools)
 
         n_ref_resolve = recorder.start("resolve_reference_input", {"ref_arg": args.ref})
@@ -453,20 +731,99 @@ def main() -> int:
 
         sample = args.sample_id
         sam = outdir / f"{sample}.sam"
-        bam = outdir / f"{sample}.sorted.bam"
-        vcf = outdir / f"{sample}.variants.vcf"
+        sorted_bam = outdir / f"{sample}.sorted.bam"
+        dedup_bam = outdir / f"{sample}.dedup.bam"
+        raw_vcf = outdir / f"{sample}.variants.raw.vcf"
+        filtered_vcf = outdir / f"{sample}.variants.filtered.vcf"
         csv_file = outdir / "mutations.csv"
         report = outdir / "disease_association_report.md"
         prediction_json = outdir / "disease_prediction.json"
 
+        n_raw_qc = recorder.start(
+            "raw_fastq_qc",
+            {
+                "fastq1": str(fastq1),
+                "fastq2": str(fastq2) if fastq2 else None,
+                "qc_gate": args.qc_gate,
+                "max_n_rate": args.max_n_rate,
+            },
+        )
+        raw_qc = _run_raw_qc(
+            fastq1,
+            fastq2,
+            outdir,
+            qc_gate=args.qc_gate,
+            max_n_rate=args.max_n_rate,
+        )
+        recorder.finish(
+            n_raw_qc,
+            outputs={"raw_qc_json": raw_qc["raw_qc_path"]},
+            stats={
+                "total_reads": raw_qc["overall"]["total_reads"],
+                "n_rate": raw_qc["overall"]["n_rate"],
+            },
+        )
+
+        n_trim = recorder.start(
+            "trim_adapters_and_low_quality",
+            {
+                "fastq1": str(fastq1),
+                "fastq2": str(fastq2) if fastq2 else None,
+                "min_read_length": args.min_read_length,
+                "min_qscore": args.min_qscore,
+            },
+        )
+        trim_outputs = _trim_fastq(
+            fastp_bin,
+            fastq1,
+            fastq2,
+            outdir,
+            min_read_length=args.min_read_length,
+            min_qscore=args.min_qscore,
+            threads=args.threads,
+            node=n_trim,
+        )
+        clean_fastq1 = Path(trim_outputs["clean_r1"]).resolve()
+        clean_fastq2 = Path(trim_outputs["clean_r2"]).resolve() if trim_outputs["clean_r2"] else None
+        recorder.finish(
+            n_trim,
+            outputs={
+                "clean_r1": str(clean_fastq1),
+                "clean_r2": str(clean_fastq2) if clean_fastq2 else "",
+                "fastp_json": trim_outputs["fastp_json"],
+                "fastp_html": trim_outputs["fastp_html"],
+            },
+        )
+
+        n_post_trim_qc = recorder.start(
+            "post_trim_qc",
+            {
+                "clean_r1": str(clean_fastq1),
+                "clean_r2": str(clean_fastq2) if clean_fastq2 else None,
+            },
+        )
+        post_trim_qc = _run_post_trim_qc(raw_qc, clean_fastq1, clean_fastq2, outdir)
+        recorder.finish(
+            n_post_trim_qc,
+            outputs={"post_trim_qc_json": post_trim_qc["post_qc_path"]},
+            stats={
+                "read_retention": post_trim_qc["overall"]["read_retention"],
+                "n_rate_delta": post_trim_qc["overall"]["n_rate_delta"],
+            },
+        )
+
         rg = f"@RG\\tID:{sample}\\tSM:{sample}\\tPL:ILLUMINA"
-        bwa_cmd = [bwa_bin, "mem", "-t", str(args.threads), "-R", rg, str(ref_fa), str(fastq1)]
-        if fastq2:
-            bwa_cmd.append(str(fastq2))
+        bwa_cmd = [bwa_bin, "mem", "-t", str(args.threads), "-R", rg, str(ref_fa), str(clean_fastq1)]
+        if clean_fastq2:
+            bwa_cmd.append(str(clean_fastq2))
 
         n_align = recorder.start(
             "align_reads_bwa_mem",
-            {"fastq1": str(fastq1), "fastq2": str(fastq2) if fastq2 else None, "threads": args.threads},
+            {
+                "fastq1": str(clean_fastq1),
+                "fastq2": str(clean_fastq2) if clean_fastq2 else None,
+                "threads": args.threads,
+            },
         )
         with sam.open("w", encoding="utf-8") as sam_out:
             t0 = time.time()
@@ -475,14 +832,26 @@ def main() -> int:
         recorder.finish(n_align, outputs={"sam": str(sam)})
 
         n_sort = recorder.start("sort_bam_samtools", {"sam": str(sam)})
-        _run([samtools_bin, "sort", "-@", str(args.threads), "-o", str(bam), str(sam)], node=n_sort)
-        recorder.finish(n_sort, outputs={"bam": str(bam)})
+        _run([samtools_bin, "sort", "-@", str(args.threads), "-o", str(sorted_bam), str(sam)], node=n_sort)
+        recorder.finish(n_sort, outputs={"bam": str(sorted_bam)})
 
-        n_bam_idx = recorder.start("index_bam_samtools", {"bam": str(bam)})
-        _run([samtools_bin, "index", str(bam)], node=n_bam_idx)
-        recorder.finish(n_bam_idx, outputs={"bai": str(Path(str(bam) + ".bai"))})
+        n_dedup = recorder.start("mark_duplicates", {"sorted_bam": str(sorted_bam)})
+        dedup_outputs = _mark_duplicates(gatk_bin, sorted_bam, sample, outdir, node=n_dedup)
+        dedup_bam = Path(dedup_outputs["dedup_bam"]).resolve()
+        recorder.finish(
+            n_dedup,
+            outputs={
+                "dedup_bam": str(dedup_bam),
+                "dedup_bai": dedup_outputs["dedup_bai"],
+                "dedup_metrics": dedup_outputs["dedup_metrics"],
+            },
+        )
 
-        n_call = recorder.start("call_variants_gatk_haplotypecaller", {"bam": str(bam), "ref": str(ref_fa)})
+        n_bam_idx = recorder.start("index_bam_samtools", {"bam": str(dedup_bam)})
+        _run([samtools_bin, "index", str(dedup_bam)], node=n_bam_idx)
+        recorder.finish(n_bam_idx, outputs={"bai": str(Path(str(dedup_bam) + ".bai"))})
+
+        n_call = recorder.start("call_variants_gatk_haplotypecaller", {"bam": str(dedup_bam), "ref": str(ref_fa)})
         _run(
             [
                 gatk_bin,
@@ -490,21 +859,42 @@ def main() -> int:
                 "-R",
                 str(ref_fa),
                 "-I",
-                str(bam),
+                str(dedup_bam),
                 "-O",
-                str(vcf),
+                str(raw_vcf),
             ],
             node=n_call,
         )
-        recorder.finish(n_call, outputs={"vcf": str(vcf)})
+        recorder.finish(n_call, outputs={"vcf": str(raw_vcf)})
 
-        n_vcf_header = recorder.start("ensure_vcf_reference_header", {"vcf": str(vcf), "ref": str(ref_fa)})
-        _inject_reference_header(vcf, ref_fa)
-        variants = _count_vcf_variants(vcf)
-        recorder.finish(n_vcf_header, stats={"variants": variants})
+        n_vcf_header = recorder.start("ensure_vcf_reference_header", {"vcf": str(raw_vcf), "ref": str(ref_fa)})
+        _inject_reference_header(raw_vcf, ref_fa)
+        raw_variants = _count_vcf_variants(raw_vcf)
+        recorder.finish(n_vcf_header, stats={"variants": raw_variants})
 
-        n_csv = recorder.start("convert_vcf_to_csv", {"vcf": str(vcf)})
-        csv_stats = _vcf_to_csv(vcf, csv_file)
+        n_filter = recorder.start("filter_variants_hard", {"vcf": str(raw_vcf)})
+        filtered_vcf = _filter_variants_hard(gatk_bin, raw_vcf, sample, outdir, node=n_filter)
+        variants = _count_pass_variants(filtered_vcf)
+        filtered_total = _count_vcf_variants(filtered_vcf)
+        filter_stats = {
+            "raw_variants": raw_variants,
+            "filtered_variants": filtered_total,
+            "pass_variants": variants,
+        }
+        recorder.finish(
+            n_filter,
+            outputs={"filtered_vcf": str(filtered_vcf)},
+            stats=filter_stats,
+        )
+
+        n_vcf_header_filtered = recorder.start(
+            "ensure_filtered_vcf_reference_header", {"vcf": str(filtered_vcf), "ref": str(ref_fa)}
+        )
+        _inject_reference_header(filtered_vcf, ref_fa)
+        recorder.finish(n_vcf_header_filtered, stats={"pass_variants": variants})
+
+        n_csv = recorder.start("convert_vcf_to_csv", {"vcf": str(filtered_vcf)})
+        csv_stats = _vcf_to_csv(filtered_vcf, csv_file)
         recorder.finish(n_csv, outputs={"csv": str(csv_file)}, stats=csv_stats)
 
         n_pred = recorder.start("disease_prediction_from_csv", {"csv": str(csv_file)})
@@ -520,7 +910,7 @@ def main() -> int:
         )
 
         n_report = recorder.start("generate_markdown_report", {"report": str(report)})
-        _write_report(report, fastq1, fastq2, ref_fa, vcf, csv_file, prediction, bam, variants)
+        _write_report(report, fastq1, fastq2, ref_fa, filtered_vcf, csv_file, prediction, dedup_bam, variants)
         recorder.finish(n_report, outputs={"report": str(report)})
 
         n_cleanup = recorder.start("cleanup_temp_files", {"sam": str(sam)})
@@ -532,11 +922,12 @@ def main() -> int:
             json.dumps(
                 {
                     "ok": True,
-                    "vcf": str(vcf),
+                    "vcf": str(filtered_vcf),
+                    "raw_vcf": str(raw_vcf),
                     "csv": str(csv_file),
                     "report": str(report),
                     "prediction_json": str(prediction_json),
-                    "bam": str(bam),
+                    "bam": str(dedup_bam),
                     "reference": str(ref_fa),
                     "variants": variants,
                     "node_records": str(records_path),

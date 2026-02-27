@@ -184,6 +184,18 @@ STAGE_LABELS: Dict[int, str] = {
     10: "生成最终报告",
 }
 
+STAGE_ESTIMATES: Dict[int, float] = {
+    2: 1.5,   # 参考索引构建约 1.5 小时 (hg38 bwa index)
+    3: 0.5,   # BWA mem 约 0.5 小时
+    4: 0.2,   # Sort BAM 约 0.2 小时
+    5: 0.1,   # Index BAM 约 0.1 小时
+    6: 1.0,   # HaplotypeCaller 约 1.0 小时
+    7: 0.1,   # Header check 约 0.1 小时
+    8: 0.1,   # CSV conversion 约 0.1 小时
+    9: 0.1,   # Risk calculation 约 0.1 小时
+    10: 0.1,  # Report gen 约 0.1 小时
+}
+
 NODE_TO_STAGE: Dict[str, int] = {
     "build_reference_index": 2,
     "align_reads_bwa_mem": 3,
@@ -214,7 +226,8 @@ def _load_stage_progress(outdir_path: Path, stage2_progress: int) -> Dict[int, i
         if status == "ok":
             progress[stage] = 100
         elif status == "running":
-            progress[stage] = max(progress[stage], 20)
+            if progress[stage] == 0:
+                progress[stage] = 1
     return progress
 
 
@@ -231,15 +244,13 @@ def _build_stage_status_text(
     for stage in range(2, 11):
         pct = 100 if finished_ok else max(0, min(100, int(stage_progress.get(stage, 0))))
         label = STAGE_LABELS[stage]
+        est = STAGE_ESTIMATES.get(stage, 0.1)
         if pct >= 100:
-            if stage == 2:
-                lines.append(f"{stage}、{label}：100%（耗时：约{total_elapsed}）")
-            else:
-                lines.append(f"{stage}、{label}：100%（耗时：约x小时）")
+            lines.append(f"{stage}、{label}：100%（耗时：已完成）")
         elif pct <= 0:
-            lines.append(f"{stage}、{label}：0%（未开始，预计耗时：约x小时）")
+            lines.append(f"{stage}、{label}：0%（未开始，预计耗时：约{est}小时）")
         else:
-            suffix = "预计耗时：约x小时" if running else "已中断"
+            suffix = f"预计耗时：约{est}小时" if running else "已中断"
             lines.append(f"{stage}、{label}：{pct}%（{suffix}）")
     return "\n".join(lines)
 
@@ -312,12 +323,14 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
             )
             start_ts = time.time()
             next_progress = 5
+            last_sent_progress = 0  # 追踪上一次推送的进度
             while True:
                 rc = proc.poll()
                 prog = _load_json(progress_file).get("progress")
                 if isinstance(prog, int):
-                    while next_progress <= 100 and prog >= next_progress:
-                        stage_progress = _load_stage_progress(outdir_path, next_progress)
+                    # 当进度达到 next_progress（比如5%的倍数），并且比上次推送至少多了5%
+                    if prog >= next_progress and prog >= last_sent_progress + 5:
+                        stage_progress = _load_stage_progress(outdir_path, prog)
                         panel = _build_stage_status_text(
                             stage_progress=stage_progress,
                             total_started_at=start_ts,
@@ -325,7 +338,8 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
                             finished_ok=False,
                         )
                         _send_dingtalk_text(webhook, panel)
-                        next_progress += 5
+                        last_sent_progress = prog
+                        next_progress = ((prog // 5) + 1) * 5
                 if rc is not None:
                     break
                 if time.time() - start_ts > RUN_TIMEOUT_SEC:

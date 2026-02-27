@@ -1,33 +1,35 @@
 {
-  "pipeline_id": "bio-1619dff3ad",
+  "pipeline_id": "bio-7426c8f29d",
   "sample_id": "sample1",
-  "started_at": "2026-02-27T06:39:25.415599+00:00",
-  "finished_at": "2026-02-27T07:02:29.583794+00:00",
-  "status": "failed",
+  "started_at": "2026-02-27T12:50:20.347522+00:00",
+  "finished_at": "2026-02-27T12:54:54.739768+00:00",
+  "status": "ok",
   "nodes": [
     {
       "id": 1,
       "name": "tool_check",
       "status": "ok",
-      "started_at": "2026-02-27T06:39:25.415754+00:00",
+      "started_at": "2026-02-27T12:50:20.347689+00:00",
       "inputs": {
         "tools": [
           "bwa",
           "samtools",
-          "gatk"
+          "gatk",
+          "fastp",
+          "bcftools"
         ]
       },
       "outputs": {},
       "stats": {},
       "commands": [],
-      "finished_at": "2026-02-27T06:39:25.416178+00:00",
+      "finished_at": "2026-02-27T12:50:20.348417+00:00",
       "duration_ms": 0
     },
     {
       "id": 2,
       "name": "resolve_reference_input",
       "status": "ok",
-      "started_at": "2026-02-27T06:39:25.416183+00:00",
+      "started_at": "2026-02-27T12:50:20.348423+00:00",
       "inputs": {
         "ref_arg": "/Users/work/000code/github/refer_hg/hg38/hg38.fa"
       },
@@ -36,38 +38,420 @@
       },
       "stats": {},
       "commands": [],
-      "finished_at": "2026-02-27T06:39:25.416225+00:00",
+      "finished_at": "2026-02-27T12:50:20.348501+00:00",
       "duration_ms": 0
     },
     {
       "id": 3,
       "name": "materialize_reference",
       "status": "ok",
-      "started_at": "2026-02-27T06:39:25.416228+00:00",
+      "started_at": "2026-02-27T12:50:20.348504+00:00",
       "inputs": {
         "ref_input": "/Users/work/000code/github/refer_hg/hg38/hg38.fa"
       },
       "outputs": {
-        "ref_fasta": "/Users/work/000code/github/test_data/out_dingtalk/ref/hg38.fa"
+        "ref_fasta": "/Users/work/000code/github/refer_hg/hg38/hg38.fa"
       },
       "stats": {},
       "commands": [],
-      "finished_at": "2026-02-27T06:39:25.416354+00:00",
+      "finished_at": "2026-02-27T12:50:20.348535+00:00",
       "duration_ms": 0
     },
     {
       "id": 4,
       "name": "build_reference_index",
-      "status": "running",
-      "started_at": "2026-02-27T06:39:25.416357+00:00",
-      "_t0": 1772174365.416358,
+      "status": "ok",
+      "started_at": "2026-02-27T12:50:20.348537+00:00",
       "inputs": {
-        "ref_fasta": "/Users/work/000code/github/test_data/out_dingtalk/ref/hg38.fa"
+        "ref_fasta": "/Users/work/000code/github/refer_hg/hg38/hg38.fa"
+      },
+      "outputs": {
+        "fai": "/Users/work/000code/github/refer_hg/hg38/hg38.fa.fai",
+        "dict": "/Users/work/000code/github/refer_hg/hg38/hg38.dict"
+      },
+      "stats": {},
+      "commands": [],
+      "finished_at": "2026-02-27T12:50:20.348620+00:00",
+      "duration_ms": 0
+    },
+    {
+      "id": 5,
+      "name": "raw_fastq_qc",
+      "status": "ok",
+      "started_at": "2026-02-27T12:50:20.348643+00:00",
+      "inputs": {
+        "fastq1": "/Users/work/000code/github/test_data/sample1.fastq",
+        "fastq2": null,
+        "qc_gate": false,
+        "max_n_rate": 0.1
+      },
+      "outputs": {
+        "raw_qc_json": "/Users/work/000code/github/test_data/out_dingtalk/qc/raw_qc.json"
+      },
+      "stats": {
+        "total_reads": 80,
+        "n_rate": 0.0
+      },
+      "commands": [],
+      "finished_at": "2026-02-27T12:50:20.349110+00:00",
+      "duration_ms": 0
+    },
+    {
+      "id": 6,
+      "name": "trim_adapters_and_low_quality",
+      "status": "ok",
+      "started_at": "2026-02-27T12:50:20.349115+00:00",
+      "inputs": {
+        "fastq1": "/Users/work/000code/github/test_data/sample1.fastq",
+        "fastq2": null,
+        "min_read_length": 50,
+        "min_qscore": 20
+      },
+      "outputs": {
+        "clean_r1": "/Users/work/000code/github/test_data/out_dingtalk/clean/clean_R1.fastq.gz",
+        "clean_r2": "",
+        "fastp_json": "/Users/work/000code/github/test_data/out_dingtalk/qc/fastp.json",
+        "fastp_html": "/Users/work/000code/github/test_data/out_dingtalk/qc/fastp.html"
+      },
+      "stats": {},
+      "commands": [
+        {
+          "cmd": [
+            "/Users/lixiuna/miniconda3/bin/fastp",
+            "-i",
+            "/Users/work/000code/github/test_data/sample1.fastq",
+            "-o",
+            "/Users/work/000code/github/test_data/out_dingtalk/clean/clean_R1.fastq.gz",
+            "-q",
+            "20",
+            "-l",
+            "50",
+            "-w",
+            "8",
+            "-j",
+            "/Users/work/000code/github/test_data/out_dingtalk/qc/fastp.json",
+            "-h",
+            "/Users/work/000code/github/test_data/out_dingtalk/qc/fastp.html"
+          ],
+          "elapsed_ms": 310
+        }
+      ],
+      "finished_at": "2026-02-27T12:50:20.659324+00:00",
+      "duration_ms": 310
+    },
+    {
+      "id": 7,
+      "name": "post_trim_qc",
+      "status": "ok",
+      "started_at": "2026-02-27T12:50:20.659348+00:00",
+      "inputs": {
+        "clean_r1": "/Users/work/000code/github/test_data/out_dingtalk/clean/clean_R1.fastq.gz",
+        "clean_r2": null
+      },
+      "outputs": {
+        "post_trim_qc_json": "/Users/work/000code/github/test_data/out_dingtalk/qc/post_trim_qc.json"
+      },
+      "stats": {
+        "read_retention": 1.0,
+        "n_rate_delta": 0.0
+      },
+      "commands": [],
+      "finished_at": "2026-02-27T12:50:20.659913+00:00",
+      "duration_ms": 0
+    },
+    {
+      "id": 8,
+      "name": "align_reads_bwa_mem",
+      "status": "ok",
+      "started_at": "2026-02-27T12:50:20.659920+00:00",
+      "inputs": {
+        "fastq1": "/Users/work/000code/github/test_data/out_dingtalk/clean/clean_R1.fastq.gz",
+        "fastq2": null,
+        "threads": 8
+      },
+      "outputs": {
+        "sam": "/Users/work/000code/github/test_data/out_dingtalk/sample1.sam"
+      },
+      "stats": {},
+      "commands": [
+        {
+          "cmd": [
+            "/opt/homebrew/bin/bwa",
+            "mem",
+            "-t",
+            "8",
+            "-R",
+            "@RG\\tID:sample1\\tSM:sample1\\tPL:ILLUMINA",
+            "/Users/work/000code/github/refer_hg/hg38/hg38.fa",
+            "/Users/work/000code/github/test_data/out_dingtalk/clean/clean_R1.fastq.gz"
+          ],
+          "elapsed_ms": 690
+        }
+      ],
+      "finished_at": "2026-02-27T12:50:21.350363+00:00",
+      "duration_ms": 690
+    },
+    {
+      "id": 9,
+      "name": "sort_bam_samtools",
+      "status": "ok",
+      "started_at": "2026-02-27T12:50:21.350397+00:00",
+      "inputs": {
+        "sam": "/Users/work/000code/github/test_data/out_dingtalk/sample1.sam"
+      },
+      "outputs": {
+        "bam": "/Users/work/000code/github/test_data/out_dingtalk/sample1.sorted.bam"
+      },
+      "stats": {},
+      "commands": [
+        {
+          "cmd": [
+            "/opt/homebrew/bin/samtools",
+            "sort",
+            "-@",
+            "8",
+            "-o",
+            "/Users/work/000code/github/test_data/out_dingtalk/sample1.sorted.bam",
+            "/Users/work/000code/github/test_data/out_dingtalk/sample1.sam"
+          ],
+          "elapsed_ms": 30
+        }
+      ],
+      "finished_at": "2026-02-27T12:50:21.381182+00:00",
+      "duration_ms": 30
+    },
+    {
+      "id": 10,
+      "name": "mark_duplicates",
+      "status": "ok",
+      "started_at": "2026-02-27T12:50:21.381225+00:00",
+      "inputs": {
+        "sorted_bam": "/Users/work/000code/github/test_data/out_dingtalk/sample1.sorted.bam"
+      },
+      "outputs": {
+        "dedup_bam": "/Users/work/000code/github/test_data/out_dingtalk/sample1.dedup.bam",
+        "dedup_bai": "/Users/work/000code/github/test_data/out_dingtalk/sample1.dedup.bam.bai",
+        "dedup_metrics": "/Users/work/000code/github/test_data/out_dingtalk/sample1.dedup.metrics.txt"
+      },
+      "stats": {},
+      "commands": [
+        {
+          "cmd": [
+            "/Users/lixiuna/miniconda3/bin/gatk",
+            "MarkDuplicates",
+            "-I",
+            "/Users/work/000code/github/test_data/out_dingtalk/sample1.sorted.bam",
+            "-O",
+            "/Users/work/000code/github/test_data/out_dingtalk/sample1.dedup.bam",
+            "-M",
+            "/Users/work/000code/github/test_data/out_dingtalk/sample1.dedup.metrics.txt",
+            "--CREATE_INDEX",
+            "true"
+          ],
+          "elapsed_ms": 13507
+        }
+      ],
+      "finished_at": "2026-02-27T12:50:34.889451+00:00",
+      "duration_ms": 13508
+    },
+    {
+      "id": 11,
+      "name": "index_bam_samtools",
+      "status": "ok",
+      "started_at": "2026-02-27T12:50:34.889474+00:00",
+      "inputs": {
+        "bam": "/Users/work/000code/github/test_data/out_dingtalk/sample1.dedup.bam"
+      },
+      "outputs": {
+        "bai": "/Users/work/000code/github/test_data/out_dingtalk/sample1.dedup.bam.bai"
+      },
+      "stats": {},
+      "commands": [
+        {
+          "cmd": [
+            "/opt/homebrew/bin/samtools",
+            "index",
+            "/Users/work/000code/github/test_data/out_dingtalk/sample1.dedup.bam"
+          ],
+          "elapsed_ms": 7
+        }
+      ],
+      "finished_at": "2026-02-27T12:50:34.896791+00:00",
+      "duration_ms": 7
+    },
+    {
+      "id": 12,
+      "name": "call_variants_gatk_haplotypecaller",
+      "status": "ok",
+      "started_at": "2026-02-27T12:50:34.896837+00:00",
+      "inputs": {
+        "bam": "/Users/work/000code/github/test_data/out_dingtalk/sample1.dedup.bam",
+        "ref": "/Users/work/000code/github/refer_hg/hg38/hg38.fa"
+      },
+      "outputs": {
+        "vcf": "/Users/work/000code/github/test_data/out_dingtalk/sample1.variants.raw.vcf"
+      },
+      "stats": {},
+      "commands": [
+        {
+          "cmd": [
+            "/Users/lixiuna/miniconda3/bin/gatk",
+            "HaplotypeCaller",
+            "-R",
+            "/Users/work/000code/github/refer_hg/hg38/hg38.fa",
+            "-I",
+            "/Users/work/000code/github/test_data/out_dingtalk/sample1.dedup.bam",
+            "-O",
+            "/Users/work/000code/github/test_data/out_dingtalk/sample1.variants.raw.vcf"
+          ],
+          "elapsed_ms": 241070
+        }
+      ],
+      "finished_at": "2026-02-27T12:54:35.967291+00:00",
+      "duration_ms": 241070
+    },
+    {
+      "id": 13,
+      "name": "ensure_vcf_reference_header",
+      "status": "ok",
+      "started_at": "2026-02-27T12:54:35.967327+00:00",
+      "inputs": {
+        "vcf": "/Users/work/000code/github/test_data/out_dingtalk/sample1.variants.raw.vcf",
+        "ref": "/Users/work/000code/github/refer_hg/hg38/hg38.fa"
       },
       "outputs": {},
+      "stats": {
+        "variants": 0
+      },
+      "commands": [],
+      "finished_at": "2026-02-27T12:54:35.968201+00:00",
+      "duration_ms": 0
+    },
+    {
+      "id": 14,
+      "name": "filter_variants_hard",
+      "status": "ok",
+      "started_at": "2026-02-27T12:54:35.968207+00:00",
+      "inputs": {
+        "vcf": "/Users/work/000code/github/test_data/out_dingtalk/sample1.variants.raw.vcf"
+      },
+      "outputs": {
+        "filtered_vcf": "/Users/work/000code/github/test_data/out_dingtalk/sample1.variants.filtered.vcf"
+      },
+      "stats": {
+        "raw_variants": 0,
+        "filtered_variants": 0,
+        "pass_variants": 0
+      },
+      "commands": [
+        {
+          "cmd": [
+            "/Users/lixiuna/miniconda3/bin/gatk",
+            "VariantFiltration",
+            "-V",
+            "/Users/work/000code/github/test_data/out_dingtalk/sample1.variants.raw.vcf",
+            "-O",
+            "/Users/work/000code/github/test_data/out_dingtalk/sample1.variants.filtered.vcf",
+            "--filter-name",
+            "LOW_QUAL",
+            "--filter-expression",
+            "QUAL < 30.0",
+            "--filter-name",
+            "LOW_DP",
+            "--filter-expression",
+            "DP < 10"
+          ],
+          "elapsed_ms": 18768
+        }
+      ],
+      "finished_at": "2026-02-27T12:54:54.737469+00:00",
+      "duration_ms": 18769
+    },
+    {
+      "id": 15,
+      "name": "ensure_filtered_vcf_reference_header",
+      "status": "ok",
+      "started_at": "2026-02-27T12:54:54.737487+00:00",
+      "inputs": {
+        "vcf": "/Users/work/000code/github/test_data/out_dingtalk/sample1.variants.filtered.vcf",
+        "ref": "/Users/work/000code/github/refer_hg/hg38/hg38.fa"
+      },
+      "outputs": {},
+      "stats": {
+        "pass_variants": 0
+      },
+      "commands": [],
+      "finished_at": "2026-02-27T12:54:54.737650+00:00",
+      "duration_ms": 0
+    },
+    {
+      "id": 16,
+      "name": "convert_vcf_to_csv",
+      "status": "ok",
+      "started_at": "2026-02-27T12:54:54.737653+00:00",
+      "inputs": {
+        "vcf": "/Users/work/000code/github/test_data/out_dingtalk/sample1.variants.filtered.vcf"
+      },
+      "outputs": {
+        "csv": "/Users/work/000code/github/test_data/out_dingtalk/mutations.csv"
+      },
+      "stats": {
+        "rows": 0
+      },
+      "commands": [],
+      "finished_at": "2026-02-27T12:54:54.739064+00:00",
+      "duration_ms": 1
+    },
+    {
+      "id": 17,
+      "name": "disease_prediction_from_csv",
+      "status": "ok",
+      "started_at": "2026-02-27T12:54:54.739070+00:00",
+      "inputs": {
+        "csv": "/Users/work/000code/github/test_data/out_dingtalk/mutations.csv"
+      },
+      "outputs": {
+        "prediction_json": "/Users/work/000code/github/test_data/out_dingtalk/disease_prediction.json"
+      },
+      "stats": {
+        "overall_risk_level": "low",
+        "variant_count": 0
+      },
+      "commands": [],
+      "finished_at": "2026-02-27T12:54:54.739538+00:00",
+      "duration_ms": 0
+    },
+    {
+      "id": 18,
+      "name": "generate_markdown_report",
+      "status": "ok",
+      "started_at": "2026-02-27T12:54:54.739544+00:00",
+      "inputs": {
+        "report": "/Users/work/000code/github/test_data/out_dingtalk/disease_association_report.md"
+      },
+      "outputs": {
+        "report": "/Users/work/000code/github/test_data/out_dingtalk/disease_association_report.md"
+      },
       "stats": {},
-      "commands": []
+      "commands": [],
+      "finished_at": "2026-02-27T12:54:54.739660+00:00",
+      "duration_ms": 0
+    },
+    {
+      "id": 19,
+      "name": "cleanup_temp_files",
+      "status": "ok",
+      "started_at": "2026-02-27T12:54:54.739664+00:00",
+      "inputs": {
+        "sam": "/Users/work/000code/github/test_data/out_dingtalk/sample1.sam"
+      },
+      "outputs": {
+        "sam_removed": "/Users/work/000code/github/test_data/out_dingtalk/sample1.sam"
+      },
+      "stats": {},
+      "commands": [],
+      "finished_at": "2026-02-27T12:54:54.739765+00:00",
+      "duration_ms": 0
     }
-  ],
-  "error": "Command '['/opt/homebrew/bin/bwa', 'index', '/Users/work/000code/github/test_data/out_dingtalk/ref/hg38.fa']' returned non-zero exit status 1."
+  ]
 }
