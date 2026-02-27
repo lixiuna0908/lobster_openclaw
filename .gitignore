@@ -2,3 +2,6 @@ chen/
 .venv/
 **/.venv/
 .DS_Store
+
+refer_hg/hg38/hg38.fa
+test_data/out_dingtalk/ref/
