@@ -1,16 +1,15 @@
 {
-  "pipeline_id": "bio-d65d648625",
+  "pipeline_id": "bio-1619dff3ad",
   "sample_id": "sample1",
-  "started_at": "2026-02-24T16:14:11.437086+00:00",
-  "finished_at": "2026-02-24T16:14:11.437875+00:00",
+  "started_at": "2026-02-27T06:39:25.415599+00:00",
+  "finished_at": "2026-02-27T07:02:29.583794+00:00",
   "status": "failed",
   "nodes": [
     {
       "id": 1,
       "name": "tool_check",
-      "status": "running",
-      "started_at": "2026-02-24T16:14:11.437238+00:00",
-      "_t0": 1771949651.4372401,
+      "status": "ok",
+      "started_at": "2026-02-27T06:39:25.415754+00:00",
       "inputs": {
         "tools": [
           "bwa",
@@ -20,8 +19,55 @@
       },
       "outputs": {},
       "stats": {},
+      "commands": [],
+      "finished_at": "2026-02-27T06:39:25.416178+00:00",
+      "duration_ms": 0
+    },
+    {
+      "id": 2,
+      "name": "resolve_reference_input",
+      "status": "ok",
+      "started_at": "2026-02-27T06:39:25.416183+00:00",
+      "inputs": {
+        "ref_arg": "/Users/work/000code/github/refer_hg/hg38/hg38.fa"
+      },
+      "outputs": {
+        "ref_input": "/Users/work/000code/github/refer_hg/hg38/hg38.fa"
+      },
+      "stats": {},
+      "commands": [],
+      "finished_at": "2026-02-27T06:39:25.416225+00:00",
+      "duration_ms": 0
+    },
+    {
+      "id": 3,
+      "name": "materialize_reference",
+      "status": "ok",
+      "started_at": "2026-02-27T06:39:25.416228+00:00",
+      "inputs": {
+        "ref_input": "/Users/work/000code/github/refer_hg/hg38/hg38.fa"
+      },
+      "outputs": {
+        "ref_fasta": "/Users/work/000code/github/test_data/out_dingtalk/ref/hg38.fa"
+      },
+      "stats": {},
+      "commands": [],
+      "finished_at": "2026-02-27T06:39:25.416354+00:00",
+      "duration_ms": 0
+    },
+    {
+      "id": 4,
+      "name": "build_reference_index",
+      "status": "running",
+      "started_at": "2026-02-27T06:39:25.416357+00:00",
+      "_t0": 1772174365.416358,
+      "inputs": {
+        "ref_fasta": "/Users/work/000code/github/test_data/out_dingtalk/ref/hg38.fa"
+      },
+      "outputs": {},
+      "stats": {},
       "commands": []
     }
   ],
-  "error": "Required tool not found in PATH: gatk"
+  "error": "Command '['/opt/homebrew/bin/bwa', 'index', '/Users/work/000code/github/test_data/out_dingtalk/ref/hg38.fa']' returned non-zero exit status 1."
 }

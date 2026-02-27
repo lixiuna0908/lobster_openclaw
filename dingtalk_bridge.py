@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import unquote_plus
 
 import requests
+from Crypto.Cipher import AES
 from fastapi import FastAPI, Header, HTTPException, Request
 
 
@@ -23,6 +24,8 @@ RUNTIME_DIR = ROOT_DIR / "dingtalk_runtime"
 RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
 SIGN_SECRET = os.getenv("DINGTALK_SIGN_SECRET", "").strip()
+CALLBACK_TOKEN = os.getenv("DINGTALK_CALLBACK_TOKEN", "").strip()
+CALLBACK_AES_KEY = os.getenv("DINGTALK_CALLBACK_AES_KEY", "").strip()
 DEFAULT_REPLY_WEBHOOK = os.getenv("DINGTALK_REPLY_WEBHOOK", "").strip()
 KEYWORDS = [
     kw.strip() for kw in os.getenv("DINGTALK_KEYWORDS", "帮我运行,运行流程,开始处理,FASTQ,ref").split(",") if kw.strip()
@@ -84,6 +87,94 @@ def _verify_signature(timestamp: Optional[str], sign: Optional[str]) -> bool:
     # Some clients URL-encode sign
     got = unquote_plus(sign)
     return hmac.compare_digest(expected, got)
+
+
+def _sha1_signature(*parts: str) -> str:
+    s = "".join(sorted(parts))
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()
+
+
+def _pkcs7_pad(data: bytes, block_size: int = 32) -> bytes:
+    pad_len = block_size - (len(data) % block_size)
+    return data + bytes([pad_len]) * pad_len
+
+
+def _pkcs7_unpad(data: bytes) -> bytes:
+    if not data:
+        raise ValueError("empty data")
+    pad_len = data[-1]
+    if pad_len < 1 or pad_len > 32:
+        raise ValueError("invalid PKCS7 padding")
+    if data[-pad_len:] != bytes([pad_len]) * pad_len:
+        raise ValueError("bad PKCS7 padding bytes")
+    return data[:-pad_len]
+
+
+def _decode_aes_key(aes_key_43: str) -> bytes:
+    if not aes_key_43:
+        raise ValueError("DINGTALK_CALLBACK_AES_KEY is empty")
+    # DingTalk provides 43-char Base64 without trailing "="
+    return base64.b64decode(aes_key_43 + "=")
+
+
+def _decrypt_dingtalk_event(encrypt_b64: str, aes_key: bytes) -> Tuple[str, str]:
+    encrypted = base64.b64decode(encrypt_b64)
+    cipher = AES.new(aes_key, AES.MODE_CBC, iv=aes_key[:16])
+    raw = _pkcs7_unpad(cipher.decrypt(encrypted))
+    if len(raw) < 20:
+        raise ValueError("decrypted payload too short")
+    msg_len = int.from_bytes(raw[16:20], "big")
+    msg = raw[20 : 20 + msg_len]
+    receive_id = raw[20 + msg_len :].decode("utf-8", errors="replace")
+    return msg.decode("utf-8", errors="replace"), receive_id
+
+
+def _encrypt_dingtalk_event(plain_text: str, receive_id: str, aes_key: bytes) -> str:
+    plain = plain_text.encode("utf-8")
+    rid = (receive_id or "").encode("utf-8")
+    body = os.urandom(16) + len(plain).to_bytes(4, "big") + plain + rid
+    cipher = AES.new(aes_key, AES.MODE_CBC, iv=aes_key[:16])
+    encrypted = cipher.encrypt(_pkcs7_pad(body))
+    return base64.b64encode(encrypted).decode("utf-8")
+
+
+def _encrypted_success_response(receive_id: str, timestamp: str, nonce: str) -> Dict[str, Any]:
+    aes_key = _decode_aes_key(CALLBACK_AES_KEY)
+    encrypted = _encrypt_dingtalk_event("success", receive_id, aes_key)
+    sign = _sha1_signature(CALLBACK_TOKEN, timestamp, nonce, encrypted)
+    return {
+        "msg_signature": sign,
+        "encrypt": encrypted,
+        "timeStamp": timestamp,
+        "nonce": nonce,
+    }
+
+
+def _decrypt_if_needed(request_payload: Dict[str, Any], query_params: Dict[str, str]) -> Tuple[Dict[str, Any], Optional[str], bool]:
+    encrypt = request_payload.get("encrypt")
+    if not encrypt:
+        return request_payload, None, False
+
+    if not CALLBACK_TOKEN or not CALLBACK_AES_KEY:
+        raise HTTPException(status_code=500, detail="callback token/aes_key not configured")
+
+    timestamp = str(query_params.get("timestamp") or query_params.get("timeStamp") or "")
+    nonce = str(query_params.get("nonce") or "")
+    signature = str(query_params.get("signature") or query_params.get("msg_signature") or "")
+    if not timestamp or not nonce or not signature:
+        raise HTTPException(status_code=400, detail="missing callback signature params")
+
+    expected = _sha1_signature(CALLBACK_TOKEN, timestamp, nonce, str(encrypt))
+    if not hmac.compare_digest(expected, signature):
+        raise HTTPException(status_code=401, detail="invalid callback signature")
+
+    aes_key = _decode_aes_key(CALLBACK_AES_KEY)
+    plain_text, receive_id = _decrypt_dingtalk_event(str(encrypt), aes_key)
+    try:
+        decrypted_payload = json.loads(plain_text)
+    except Exception:
+        decrypted_payload = {"text": {"content": plain_text}}
+    return decrypted_payload, receive_id, True
 
 
 def _extract_paths(text: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -202,15 +293,36 @@ async def dingtalk_callback(
     timestamp: Optional[str] = Header(default=None),
     sign: Optional[str] = Header(default=None),
 ):
-    if not _verify_signature(timestamp, sign):
-        raise HTTPException(status_code=401, detail="invalid signature")
+    # Optional legacy header-sign verification: only enforce when headers are present.
+    # DingTalk event callbacks use query params (signature/msg_signature/timestamp/nonce),
+    # which are verified in _decrypt_if_needed().
+    if (timestamp or sign) and not _verify_signature(timestamp, sign):
+        raise HTTPException(status_code=401, detail="invalid header signature")
 
-    payload = await request.json()
+    raw_payload = await request.json()
+    query = {k: v for k, v in request.query_params.items()}
+    payload, receive_id, is_encrypted_event = _decrypt_if_needed(raw_payload, query)
+
+    # DingTalk callback URL verification and event acks should return encrypted success.
+    event_type = str(payload.get("EventType") or payload.get("eventType") or "").lower()
+    if is_encrypted_event and event_type in {"check_url", "check_create_suite_url", "url_check"}:
+        ts = str(query.get("timestamp") or query.get("timeStamp") or str(int(time.time() * 1000)))
+        nonce = str(query.get("nonce") or "nonce")
+        return _encrypted_success_response(receive_id or "", ts, nonce)
+
     text = _normalize_text(payload)
     if not text:
+        if is_encrypted_event:
+            ts = str(query.get("timestamp") or query.get("timeStamp") or str(int(time.time() * 1000)))
+            nonce = str(query.get("nonce") or "nonce")
+            return _encrypted_success_response(receive_id or "", ts, nonce)
         return _reply_text("未识别到文本内容。")
 
     if not _contains_keyword(text):
+        if is_encrypted_event:
+            ts = str(query.get("timestamp") or query.get("timeStamp") or str(int(time.time() * 1000)))
+            nonce = str(query.get("nonce") or "nonce")
+            return _encrypted_success_response(receive_id or "", ts, nonce)
         return _reply_text("已接收。提示：请包含关键字（如 FASTQ/ref/帮我运行）。")
 
     session_key = _safe_session_key(payload)
@@ -240,20 +352,51 @@ async def dingtalk_callback(
             f"OUTDIR: {state.outdir or str(ROOT_DIR / 'test_data' / 'out_dingtalk')}\n"
             "发送“帮我运行”即可开始。"
         )
+        if is_encrypted_event:
+            ts = str(query.get("timestamp") or query.get("timeStamp") or str(int(time.time() * 1000)))
+            nonce = str(query.get("nonce") or "nonce")
+            # For encrypted event callbacks, respond with encrypted success and send actual text via webhook.
+            _send_dingtalk_text(webhook, msg)
+            return _encrypted_success_response(receive_id or "", ts, nonce)
         return _reply_text(msg)
 
     # Run command
     if not state.fastq or not state.ref:
+        if is_encrypted_event:
+            ts = str(query.get("timestamp") or query.get("timeStamp") or str(int(time.time() * 1000)))
+            nonce = str(query.get("nonce") or "nonce")
+            _send_dingtalk_text(webhook, "缺少参数。请先发送 fastq=... 和 ref=...，再发送“帮我运行”。")
+            return _encrypted_success_response(receive_id or "", ts, nonce)
         return _reply_text("缺少参数。请先发送 fastq=... 和 ref=...，再发送“帮我运行”。")
     if not Path(state.fastq).exists():
+        if is_encrypted_event:
+            ts = str(query.get("timestamp") or query.get("timeStamp") or str(int(time.time() * 1000)))
+            nonce = str(query.get("nonce") or "nonce")
+            _send_dingtalk_text(webhook, f"FASTQ 路径不存在：{state.fastq}")
+            return _encrypted_success_response(receive_id or "", ts, nonce)
         return _reply_text(f"FASTQ 路径不存在：{state.fastq}")
     if not Path(state.ref).exists():
+        if is_encrypted_event:
+            ts = str(query.get("timestamp") or query.get("timeStamp") or str(int(time.time() * 1000)))
+            nonce = str(query.get("nonce") or "nonce")
+            _send_dingtalk_text(webhook, f"参考基因组路径不存在：{state.ref}")
+            return _encrypted_success_response(receive_id or "", ts, nonce)
         return _reply_text(f"参考基因组路径不存在：{state.ref}")
     if not RUN_SCRIPT.exists():
+        if is_encrypted_event:
+            ts = str(query.get("timestamp") or query.get("timeStamp") or str(int(time.time() * 1000)))
+            nonce = str(query.get("nonce") or "nonce")
+            _send_dingtalk_text(webhook, f"执行脚本不存在：{RUN_SCRIPT}")
+            return _encrypted_success_response(receive_id or "", ts, nonce)
         return _reply_text(f"执行脚本不存在：{RUN_SCRIPT}")
 
     t = threading.Thread(target=_run_pipeline_async, args=(session_key, webhook, state), daemon=True)
     t.start()
+    if is_encrypted_event:
+        ts = str(query.get("timestamp") or query.get("timeStamp") or str(int(time.time() * 1000)))
+        nonce = str(query.get("nonce") or "nonce")
+        _send_dingtalk_text(webhook, "已接收运行请求，任务开始执行。稍后会回传结果。")
+        return _encrypted_success_response(receive_id or "", ts, nonce)
     return _reply_text("已接收运行请求，任务开始执行。稍后会回传结果。")
 
 

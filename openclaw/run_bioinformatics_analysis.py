@@ -2,6 +2,8 @@
 import argparse
 import gzip
 import json
+import os
+import re
 import shutil
 import subprocess
 import time
@@ -9,6 +11,15 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+
+def _ensure_runtime_path() -> None:
+    conda_bin = str(Path.home() / "miniconda3" / "bin")
+    current = os.environ.get("PATH", "")
+    parts = [p for p in current.split(os.pathsep) if p]
+    if conda_bin in parts:
+        return
+    os.environ["PATH"] = conda_bin if not current else conda_bin + os.pathsep + current
 
 
 def _now_iso() -> str:
@@ -87,9 +98,76 @@ def _run(cmd: List[str], node: Optional[Dict[str, Any]] = None, cwd: Optional[Pa
     return elapsed_ms
 
 
+def _write_bwa_index_progress(outdir: Path, progress: int) -> None:
+    progress_file = outdir / "bwa_index_progress.json"
+    payload = {
+        "phase": "bwa_index",
+        "progress": max(0, min(100, int(progress))),
+        "updated_at": _now_iso(),
+    }
+    progress_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def _run_bwa_index_with_progress(bwa_bin: str, ref_fa: Path, outdir: Path, node: Optional[Dict[str, Any]] = None) -> int:
+    cmd = [bwa_bin, "index", str(ref_fa)]
+    t0 = time.time()
+    text_length = 0
+    sent_progress = 0
+    _write_bwa_index_progress(outdir, 0)
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stderr is not None
+    try:
+        for line in proc.stderr:
+            m_len = re.search(r"textLength=(\d+)", line)
+            if m_len:
+                text_length = int(m_len.group(1))
+                continue
+            m_proc = re.search(r"(\d+)\s+characters processed\.", line)
+            if m_proc and text_length > 0:
+                processed = int(m_proc.group(1))
+                progress = int((processed * 100) / text_length)
+                progress = min(99, progress)
+                while progress >= sent_progress + 5:
+                    sent_progress += 5
+                    _write_bwa_index_progress(outdir, sent_progress)
+    finally:
+        ret = proc.wait()
+        if ret != 0:
+            raise subprocess.CalledProcessError(ret, cmd)
+    _write_bwa_index_progress(outdir, 100)
+    elapsed_ms = int((time.time() - t0) * 1000)
+    if node is not None:
+        node["commands"].append({"cmd": cmd, "elapsed_ms": elapsed_ms})
+    return elapsed_ms
+
+
 def _require_tool(tool: str) -> None:
-    if shutil.which(tool) is None:
-        raise RuntimeError(f"Required tool not found in PATH: {tool}")
+    _resolve_tool(tool)
+
+
+def _resolve_tool(tool: str) -> str:
+    resolved = shutil.which(tool)
+    if resolved:
+        return resolved
+
+    if tool == "gatk":
+        candidates = [
+            os.getenv("GATK_BIN", "").strip(),
+            str(Path.home() / "miniconda3" / "bin" / "gatk"),
+            "/Users/lixiuna/miniconda3/bin/gatk",
+        ]
+        for candidate in candidates:
+            if candidate and Path(candidate).exists():
+                return candidate
+
+    raise RuntimeError(f"Required tool not found in PATH: {tool}")
 
 
 def _resolve_ref_input(ref: str) -> Path:
@@ -121,17 +199,17 @@ def _materialize_reference(ref_in: Path, outdir: Path) -> Path:
 
 
 def _ensure_reference_indices(ref_fa: Path) -> None:
-    _require_tool("bwa")
-    _require_tool("samtools")
-    _require_tool("gatk")
+    bwa_bin = _resolve_tool("bwa")
+    samtools_bin = _resolve_tool("samtools")
+    gatk_bin = _resolve_tool("gatk")
     if not Path(str(ref_fa) + ".fai").exists():
-        _run(["samtools", "faidx", str(ref_fa)])
+        _run([samtools_bin, "faidx", str(ref_fa)])
     ref_dict = ref_fa.with_suffix(".dict")
     if not ref_dict.exists():
-        _run(["gatk", "CreateSequenceDictionary", "-R", str(ref_fa), "-O", str(ref_dict)])
+        _run([gatk_bin, "CreateSequenceDictionary", "-R", str(ref_fa), "-O", str(ref_dict)])
     bwa_idx = [Path(str(ref_fa) + ext) for ext in [".amb", ".ann", ".bwt", ".pac", ".sa"]]
     if not all(p.exists() for p in bwa_idx):
-        _run(["bwa", "index", str(ref_fa)])
+        _run([bwa_bin, "index", str(ref_fa)])
 
 
 def _inject_reference_header(vcf_path: Path, ref_fa: Path) -> None:
@@ -321,6 +399,7 @@ def _write_report(
 
 
 def main() -> int:
+    _ensure_runtime_path()
     parser = argparse.ArgumentParser(description="Production FASTQ -> VCF pipeline (BWA/GATK).")
     parser.add_argument("--fastq", required=True, help="FASTQ R1 path")
     parser.add_argument("--fastq2", default=None, help="FASTQ R2 path (optional)")
@@ -342,9 +421,9 @@ def main() -> int:
 
     try:
         n_tools = recorder.start("tool_check", {"tools": ["bwa", "samtools", "gatk"]})
-        _require_tool("bwa")
-        _require_tool("samtools")
-        _require_tool("gatk")
+        bwa_bin = _resolve_tool("bwa")
+        samtools_bin = _resolve_tool("samtools")
+        gatk_bin = _resolve_tool("gatk")
         recorder.finish(n_tools)
 
         n_ref_resolve = recorder.start("resolve_reference_input", {"ref_arg": args.ref})
@@ -357,13 +436,13 @@ def main() -> int:
 
         n_ref_idx = recorder.start("build_reference_index", {"ref_fasta": str(ref_fa)})
         if not Path(str(ref_fa) + ".fai").exists():
-            _run(["samtools", "faidx", str(ref_fa)], node=n_ref_idx)
+            _run([samtools_bin, "faidx", str(ref_fa)], node=n_ref_idx)
         ref_dict = ref_fa.with_suffix(".dict")
         if not ref_dict.exists():
-            _run(["gatk", "CreateSequenceDictionary", "-R", str(ref_fa), "-O", str(ref_dict)], node=n_ref_idx)
+            _run([gatk_bin, "CreateSequenceDictionary", "-R", str(ref_fa), "-O", str(ref_dict)], node=n_ref_idx)
         bwa_idx = [Path(str(ref_fa) + ext) for ext in [".amb", ".ann", ".bwt", ".pac", ".sa"]]
         if not all(p.exists() for p in bwa_idx):
-            _run(["bwa", "index", str(ref_fa)], node=n_ref_idx)
+            _run_bwa_index_with_progress(bwa_bin, ref_fa, outdir, node=n_ref_idx)
         recorder.finish(
             n_ref_idx,
             outputs={
@@ -381,7 +460,7 @@ def main() -> int:
         prediction_json = outdir / "disease_prediction.json"
 
         rg = f"@RG\\tID:{sample}\\tSM:{sample}\\tPL:ILLUMINA"
-        bwa_cmd = ["bwa", "mem", "-t", str(args.threads), "-R", rg, str(ref_fa), str(fastq1)]
+        bwa_cmd = [bwa_bin, "mem", "-t", str(args.threads), "-R", rg, str(ref_fa), str(fastq1)]
         if fastq2:
             bwa_cmd.append(str(fastq2))
 
@@ -396,17 +475,17 @@ def main() -> int:
         recorder.finish(n_align, outputs={"sam": str(sam)})
 
         n_sort = recorder.start("sort_bam_samtools", {"sam": str(sam)})
-        _run(["samtools", "sort", "-@", str(args.threads), "-o", str(bam), str(sam)], node=n_sort)
+        _run([samtools_bin, "sort", "-@", str(args.threads), "-o", str(bam), str(sam)], node=n_sort)
         recorder.finish(n_sort, outputs={"bam": str(bam)})
 
         n_bam_idx = recorder.start("index_bam_samtools", {"bam": str(bam)})
-        _run(["samtools", "index", str(bam)], node=n_bam_idx)
+        _run([samtools_bin, "index", str(bam)], node=n_bam_idx)
         recorder.finish(n_bam_idx, outputs={"bai": str(Path(str(bam) + ".bai"))})
 
         n_call = recorder.start("call_variants_gatk_haplotypecaller", {"bam": str(bam), "ref": str(ref_fa)})
         _run(
             [
-                "gatk",
+                gatk_bin,
                 "HaplotypeCaller",
                 "-R",
                 str(ref_fa),

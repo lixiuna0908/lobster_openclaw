@@ -8,6 +8,13 @@ FASTQ_PATH="${FASTQ_PATH:-${ROOT_DIR}/test_data/sample1.fastq}"
 REF_PATH="${REF_PATH:-${ROOT_DIR}/refer_hg/hg38/hg38.fa.gz}"
 OUTDIR_PATH="${OUTDIR_PATH:-${ROOT_DIR}/test_data/out}"
 USE_LLM_TASK="${USE_LLM_TASK:-0}"
+# Lobster tool timeout for long steps like first-time hg38 bwa index.
+BIO_TOOL_TIMEOUT_MS="${BIO_TOOL_TIMEOUT_MS:-7200000}"
+
+# Ensure conda base tools (e.g. gatk) are resolvable.
+if [[ -d "$HOME/miniconda3/bin" ]]; then
+  export PATH="$HOME/miniconda3/bin:$PATH"
+fi
 
 TOKEN="$(python3 - <<'PY'
 import json, os, sys
@@ -26,12 +33,13 @@ if [[ -z "${TOKEN}" ]]; then
   exit 1
 fi
 
-python3 - <<'PY' "$PAYLOAD_FILE" "$TOKEN" "$FASTQ_PATH" "$REF_PATH" "$OUTDIR_PATH" "$USE_LLM_TASK"
+python3 - <<'PY' "$PAYLOAD_FILE" "$TOKEN" "$FASTQ_PATH" "$REF_PATH" "$OUTDIR_PATH" "$USE_LLM_TASK" "$BIO_TOOL_TIMEOUT_MS"
 import json
 import sys
 
-payload_file, token, fastq_path, ref_path, outdir_path, use_llm_task = sys.argv[1:7]
+payload_file, token, fastq_path, ref_path, outdir_path, use_llm_task, timeout_ms = sys.argv[1:8]
 use_llm_task = use_llm_task == "1"
+timeout_ms = int(timeout_ms)
 
 schema = {
     "type": "object",
@@ -90,7 +98,7 @@ payload = {
     "args": {
         "action": "run",
         "cwd": ".",
-        "timeoutMs": 300000,
+        "timeoutMs": timeout_ms,
         "maxStdoutBytes": 1048576,
         "pipeline": pipeline,
     },
@@ -101,6 +109,7 @@ with open(payload_file, "w", encoding="utf-8") as f:
 
 print(f"[INFO] payload generated: {payload_file}")
 print(f"[INFO] mode: {'llm-task-validation' if use_llm_task else 'stable'}")
+print(f"[INFO] timeoutMs: {timeout_ms}")
 PY
 
 echo "[INFO] invoking generated payload..."

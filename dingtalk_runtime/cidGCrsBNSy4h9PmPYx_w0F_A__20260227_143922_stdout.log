@@ -1,0 +1,15 @@
+[INFO] payload generated: /Users/work/000code/github/dingtalk_runtime/cidGCrsBNSy4h9PmPYx_w0F_A__20260227_143922_payload.json
+[INFO] mode: stable
+[INFO] timeoutMs: 7200000
+[INFO] invoking generated payload...
+[INFO] invoking /tools/invoke with payload: /Users/work/000code/github/dingtalk_runtime/cidGCrsBNSy4h9PmPYx_w0F_A__20260227_143922_payload.json
+[INFO] HTTP status: 500
+[INFO] response saved to: /Users/work/000code/github/dingtalk_runtime/cidGCrsBNSy4h9PmPYx_w0F_A__20260227_143922_result.json
+[INFO] pretty response:
+{
+  "ok": false,
+  "error": {
+    "type": "tool_error",
+    "message": "tool execution failed"
+  }
+}
