@@ -45,6 +45,7 @@ LOG_ALL_TOPICS = os.getenv("DINGTALK_STREAM_LOG_ALL_TOPICS", "1").strip() not in
 @dataclass
 class SessionState:
     fastq: Optional[str] = None
+    fastq2: Optional[str] = None
     ref: Optional[str] = None
     outdir: Optional[str] = None
     last_text: Optional[str] = None
@@ -90,25 +91,30 @@ def _contains_keyword(text: str) -> bool:
     return any(kw.lower() in lower for kw in KEYWORDS)
 
 
-def _extract_paths(text: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def _extract_paths(text: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     patterns = {
-        "fastq": r"(?:fastq)\s*[:=：]\s*([^\s]+)",
+        "fastq": r"(?:fastq1?)\s*[:=：]\s*([^\s]+)",
+        "fastq2": r"(?:fastq2)\s*[:=：]\s*([^\s]+)",
         "ref": r"(?:ref|reference|参考(?:基因组)?)\s*[:=：]\s*([^\s]+)",
         "outdir": r"(?:outdir|output|输出目录)\s*[:=：]\s*([^\s]+)",
     }
     fastq = None
+    fastq2 = None
     ref = None
     outdir = None
     m = re.search(patterns["fastq"], text, flags=re.IGNORECASE)
     if m:
         fastq = m.group(1).strip()
+    m = re.search(patterns["fastq2"], text, flags=re.IGNORECASE)
+    if m:
+        fastq2 = m.group(1).strip()
     m = re.search(patterns["ref"], text, flags=re.IGNORECASE)
     if m:
         ref = m.group(1).strip()
     m = re.search(patterns["outdir"], text, flags=re.IGNORECASE)
     if m:
         outdir = m.group(1).strip()
-    return fastq, ref, outdir
+    return fastq, fastq2, ref, outdir
 
 
 def _should_run(text: str) -> bool:
@@ -209,6 +215,8 @@ NODE_TO_STAGE: Dict[str, int] = {
     "call_variants_gatk_haplotypecaller": 6,
     "ensure_vcf_reference_header": 7,
     "filter_variants_hard": 7,
+    "cnn_score_variants": 7,
+    "filter_variant_tranches": 7,
     "ensure_filtered_vcf_reference_header": 7,
     "convert_vcf_to_csv": 8,
     "disease_prediction_from_csv": 9,
@@ -312,6 +320,7 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
 
     env = os.environ.copy()
     env["FASTQ_PATH"] = state.fastq or ""
+    env["FASTQ2_PATH"] = state.fastq2 or ""
     env["REF_PATH"] = state.ref or ""
     env["OUTDIR_PATH"] = outdir
 
@@ -330,6 +339,7 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
     start_msg = (
         "已开始执行生信流程。\n"
         f"FASTQ: {env['FASTQ_PATH']}\n"
+        f"FASTQ2: {env['FASTQ2_PATH'] or '未设置(单端)'}\n"
         f"REF: {env['REF_PATH']}\n"
         f"OUTDIR: {env['OUTDIR_PATH']}\n\n"
         + _build_stage_status_text(
@@ -429,6 +439,8 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
         prediction_path = Path(outdir) / "disease_prediction.json"
         prediction = _load_json(prediction_path)
         if rc == 0:
+            top_risks = prediction.get("predictions", [])[:5]
+            risk_lines = "\n".join([f"- {item['disease']}: {item['score']}" for item in top_risks])
             content = (
                 "流程执行完成。\n"
                 f"VCF: {Path(outdir) / 'sample1.variants.vcf'}\n"
@@ -437,6 +449,7 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
                 f"风险等级: {prediction.get('overall_risk_level', 'unknown')}\n"
                 f"综合得分: {prediction.get('overall_score', 'unknown')}\n"
                 f"变异数: {prediction.get('variant_count', 'unknown')}\n"
+                f"主要预测风险 (Top 5):\n{risk_lines}\n"
                 f"结果文件: {result_path}"
             )
             final_progress, final_durations = _load_stage_progress(outdir_path, 100)
@@ -478,9 +491,11 @@ def _handle_message(payload: Dict[str, Any]) -> None:
     state.last_text = text
     state.updated_at = time.time()
 
-    fastq, ref, outdir = _extract_paths(text)
+    fastq, fastq2, ref, outdir = _extract_paths(text)
     if fastq:
         state.fastq = fastq
+    if fastq2:
+        state.fastq2 = fastq2
     if ref:
         state.ref = ref
     if outdir:
@@ -493,6 +508,7 @@ def _handle_message(payload: Dict[str, Any]) -> None:
         msg = (
             "参数已记录。\n"
             f"FASTQ: {state.fastq or '未设置'}\n"
+            f"FASTQ2: {state.fastq2 or '未设置(单端)'}\n"
             f"REF: {state.ref or '未设置'}\n"
             f"OUTDIR: {state.outdir or str(ROOT_DIR / 'test_data' / 'out_dingtalk')}\n"
             "发送“帮我运行”即可开始。"
@@ -505,6 +521,9 @@ def _handle_message(payload: Dict[str, Any]) -> None:
         return
     if not Path(state.fastq).exists():
         _send_dingtalk_text(webhook, f"FASTQ 路径不存在：{state.fastq}")
+        return
+    if state.fastq2 and not Path(state.fastq2).exists():
+        _send_dingtalk_text(webhook, f"FASTQ2 路径不存在：{state.fastq2}")
         return
     if not Path(state.ref).exists():
         _send_dingtalk_text(webhook, f"参考基因组路径不存在：{state.ref}")

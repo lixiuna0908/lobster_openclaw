@@ -620,6 +620,53 @@ def _run_bqsr(gatk_bin: str, bam: Path, ref_fa: Path, known_sites: Path, sample:
 
 
 
+def _run_cnn_score_variants(
+    gatk_bin: str,
+    raw_vcf: Path,
+    ref_fa: Path,
+    sample: str,
+    outdir: Path,
+    node: Optional[Dict[str, Any]] = None,
+) -> Path:
+    """
+    使用 GATK 内置的 1D CNN 模型对变异进行打分。
+    """
+    annotated_vcf = outdir / f"{sample}.variants.cnn_scored.vcf"
+    cmd = [
+        gatk_bin,
+        "CNNScoreVariants",
+        "-V", str(raw_vcf),
+        "-R", str(ref_fa),
+        "-O", str(annotated_vcf),
+    ]
+    _run(cmd, node=node)
+    return annotated_vcf
+
+
+def _filter_variant_tranches(
+    gatk_bin: str,
+    annotated_vcf: Path,
+    cnn_resource: Path,
+    sample: str,
+    outdir: Path,
+    node: Optional[Dict[str, Any]] = None,
+) -> Path:
+    """
+    根据 CNN_1D 得分和提供的资源集（如 HapMap, dbSNP 等）计算阈值并进行过滤。
+    """
+    filtered_vcf = outdir / f"{sample}.variants.cnn_filtered.vcf"
+    cmd = [
+        gatk_bin,
+        "FilterVariantTranches",
+        "-V", str(annotated_vcf),
+        "--resource", str(cnn_resource),
+        "--info-key", "CNN_1D",
+        "-O", str(filtered_vcf),
+    ]
+    _run(cmd, node=node)
+    return filtered_vcf
+
+
 def _filter_variants_hard(
     gatk_bin: str,
     raw_vcf: Path,
@@ -753,10 +800,145 @@ def _predict_disease(csv_path: Path) -> Dict[str, Any]:
     mean_af = (af_sum / variant_count) if variant_count else 0.0
     base = min(0.95, 0.15 + 0.55 * mean_af + 0.3 * (high_risk_count / max(1, variant_count)))
     predictions = [
-        {"disease": "肿瘤相关遗传风险", "score": round(base, 3)},
-        {"disease": "心血管代谢风险", "score": round(min(0.95, base * 0.85 + 0.05), 3)},
-        {"disease": "神经退行性风险", "score": round(min(0.95, base * 0.75 + 0.08), 3)},
+        # === 常见恶性肿瘤 (Common Cancers) ===
+        {"disease": "肺癌 (Lung Cancer)", "score": round(base, 3)},
+        {"disease": "乳腺癌 (Breast Cancer)", "score": round(base * 0.9, 3)},
+        {"disease": "结直肠癌 (Colorectal Cancer)", "score": round(base * 0.8, 3)},
+        {"disease": "胃癌 (Gastric Cancer)", "score": round(base * 0.75, 3)},
+        {"disease": "肝细胞癌 (Hepatocellular Carcinoma)", "score": round(base * 0.72, 3)},
+        {"disease": "前列腺癌 (Prostate Cancer)", "score": round(base * 0.7, 3)},
+        {"disease": "甲状腺癌 (Thyroid Cancer)", "score": round(base * 0.65, 3)},
+        {"disease": "卵巢癌 (Ovarian Cancer)", "score": round(base * 0.6, 3)},
+        {"disease": "胰腺癌 (Pancreatic Cancer)", "score": round(base * 0.58, 3)},
+        {"disease": "宫颈癌 (Cervical Cancer)", "score": round(base * 0.55, 3)},
+        {"disease": "子宫内膜癌 (Endometrial Cancer)", "score": round(base * 0.54, 3)},
+        {"disease": "白血病 (Leukemia)", "score": round(base * 0.52, 3)},
+        {"disease": "淋巴瘤 (Lymphoma)", "score": round(base * 0.51, 3)},
+        {"disease": "黑色素瘤 (Melanoma)", "score": round(base * 0.5, 3)},
+        {"disease": "食管癌 (Esophageal Cancer)", "score": round(base * 0.48, 3)},
+        {"disease": "膀胱癌 (Bladder Cancer)", "score": round(base * 0.47, 3)},
+        {"disease": "肾癌 (Kidney Cancer)", "score": round(base * 0.46, 3)},
+        {"disease": "脑胶质瘤 (Glioblastoma)", "score": round(base * 0.45, 3)},
+        {"disease": "多发性骨髓瘤 (Multiple Myeloma)", "score": round(base * 0.44, 3)},
+        {"disease": "胆管癌 (Cholangiocarcinoma)", "score": round(base * 0.43, 3)},
+        {"disease": "鼻咽癌 (Nasopharyngeal Carcinoma)", "score": round(base * 0.42, 3)},
+        {"disease": "肉瘤 (Sarcoma)", "score": round(base * 0.41, 3)},
+
+        # === 遗传性肿瘤综合征 (Hereditary Cancer Syndromes) ===
+        {"disease": "林奇综合征/遗传性非息肉病性结直肠癌 (Lynch Syndrome)", "score": round(base * 0.35, 3)},
+        {"disease": "遗传性乳腺癌-卵巢癌综合征 (HBOC, BRCA1/2)", "score": round(base * 0.38, 3)},
+        {"disease": "家族性腺瘤性息肉病 (FAP)", "score": round(base * 0.32, 3)},
+        {"disease": "李-佛美尼综合征 (Li-Fraumeni Syndrome, TP53)", "score": round(base * 0.25, 3)},
+        {"disease": "多发性内分泌腺瘤病 (MEN1/MEN2)", "score": round(base * 0.28, 3)},
+        {"disease": "视网膜母细胞瘤 (Retinoblastoma)", "score": round(base * 0.26, 3)},
+        {"disease": "神经纤维瘤病 (Neurofibromatosis Type 1/2)", "score": round(base * 0.24, 3)},
+
+        # === 心血管系统疾病 (Cardiovascular Diseases) ===
+        {"disease": "冠心病 (Coronary Artery Disease)", "score": round(min(0.95, base * 0.85 + 0.05), 3)},
+        {"disease": "原发性高血压 (Essential Hypertension)", "score": round(min(0.95, base * 0.82 + 0.04), 3)},
+        {"disease": "心力衰竭 (Heart Failure)", "score": round(min(0.95, base * 0.75 + 0.03), 3)},
+        {"disease": "心房颤动 (Atrial Fibrillation)", "score": round(min(0.95, base * 0.65 + 0.02), 3)},
+        {"disease": "肥厚型心肌病 (Hypertrophic Cardiomyopathy)", "score": round(min(0.95, base * 0.45 + 0.01), 3)},
+        {"disease": "扩张型心肌病 (Dilated Cardiomyopathy)", "score": round(min(0.95, base * 0.42 + 0.01), 3)},
+        {"disease": "长QT综合征 (Long QT Syndrome)", "score": round(min(0.95, base * 0.35 + 0.01), 3)},
+        {"disease": "马凡综合征 (Marfan Syndrome)", "score": round(min(0.95, base * 0.25 + 0.005), 3)},
+        {"disease": "主动脉夹层/动脉瘤 (Aortic Aneurysm/Dissection)", "score": round(min(0.95, base * 0.48 + 0.02), 3)},
+
+        # === 内分泌与代谢系统疾病 (Endocrine & Metabolic Diseases) ===
+        {"disease": "2型糖尿病 (Type 2 Diabetes)", "score": round(min(0.95, base * 0.8 + 0.02), 3)},
+        {"disease": "1型糖尿病 (Type 1 Diabetes)", "score": round(min(0.95, base * 0.55 + 0.01), 3)},
+        {"disease": "高脂血症 (Hyperlipidemia)", "score": round(min(0.95, base * 0.78 + 0.03), 3)},
+        {"disease": "家族性高胆固醇血症 (Familial Hypercholesterolemia)", "score": round(min(0.95, base * 0.45 + 0.02), 3)},
+        {"disease": "肥胖症 (Obesity)", "score": round(min(0.95, base * 0.72 + 0.02), 3)},
+        {"disease": "痛风/高尿酸血症 (Gout / Hyperuricemia)", "score": round(min(0.95, base * 0.68 + 0.01), 3)},
+        {"disease": "甲状腺功能亢进症 (Hyperthyroidism / Graves' Disease)", "score": round(min(0.95, base * 0.52 + 0.02), 3)},
+        {"disease": "桥本甲状腺炎 (Hashimoto's Thyroiditis)", "score": round(min(0.95, base * 0.55 + 0.02), 3)},
+        {"disease": "多囊卵巢综合征 (PCOS)", "score": round(min(0.95, base * 0.6 + 0.01), 3)},
+
+        # === 神经系统与精神疾病 (Neurological & Psychiatric Diseases) ===
+        {"disease": "阿尔茨海默病 (Alzheimer's Disease)", "score": round(min(0.95, base * 0.75 + 0.08), 3)},
+        {"disease": "帕金森病 (Parkinson's Disease)", "score": round(min(0.95, base * 0.7 + 0.04), 3)},
+        {"disease": "亨廷顿舞蹈症 (Huntington's Disease)", "score": round(min(0.95, base * 0.2 + 0.001), 3)},
+        {"disease": "肌萎缩侧索硬化症 (ALS / Lou Gehrig's Disease)", "score": round(min(0.95, base * 0.35 + 0.01), 3)},
+        {"disease": "多发性硬化症 (Multiple Sclerosis)", "score": round(min(0.95, base * 0.45 + 0.04), 3)},
+        {"disease": "抑郁症 (Major Depressive Disorder)", "score": round(min(0.95, base * 0.65 + 0.05), 3)},
+        {"disease": "精神分裂症 (Schizophrenia)", "score": round(min(0.95, base * 0.62 + 0.03), 3)},
+        {"disease": "双相情感障碍 (Bipolar Disorder)", "score": round(min(0.95, base * 0.6 + 0.02), 3)},
+        {"disease": "孤独症谱系障碍 (Autism Spectrum Disorder)", "score": round(min(0.95, base * 0.5 + 0.02), 3)},
+        {"disease": "癫痫 (Epilepsy)", "score": round(min(0.95, base * 0.58 + 0.01), 3)},
+        {"disease": "偏头痛 (Migraine)", "score": round(min(0.95, base * 0.55 + 0.02), 3)},
+
+        # === 免疫与自身免疫系统疾病 (Immune & Autoimmune Diseases) ===
+        {"disease": "系统性红斑狼疮 (Systemic Lupus Erythematosus)", "score": round(min(0.95, base * 0.55 + 0.06), 3)},
+        {"disease": "类风湿关节炎 (Rheumatoid Arthritis)", "score": round(min(0.95, base * 0.5 + 0.07), 3)},
+        {"disease": "强直性脊柱炎 (Ankylosing Spondylitis)", "score": round(min(0.95, base * 0.48 + 0.05), 3)},
+        {"disease": "银屑病/牛皮癣 (Psoriasis)", "score": round(min(0.95, base * 0.42 + 0.02), 3)},
+        {"disease": "特应性皮炎/湿疹 (Atopic Dermatitis)", "score": round(min(0.95, base * 0.45 + 0.01), 3)},
+        {"disease": "干燥综合征 (Sjogren's Syndrome)", "score": round(min(0.95, base * 0.38 + 0.02), 3)},
+        {"disease": "系统性硬化症 (Systemic Sclerosis/Scleroderma)", "score": round(min(0.95, base * 0.35 + 0.01), 3)},
+        {"disease": "原发性免疫缺陷病 (Primary Immunodeficiency)", "score": round(min(0.95, base * 0.25 + 0.01), 3)},
+
+        # === 呼吸系统疾病 (Respiratory Diseases) ===
+        {"disease": "哮喘 (Asthma)", "score": round(min(0.95, base * 0.6 + 0.02), 3)},
+        {"disease": "慢性阻塞性肺疾病 (COPD)", "score": round(min(0.95, base * 0.58 + 0.03), 3)},
+        {"disease": "特发性肺纤维化 (Idiopathic Pulmonary Fibrosis)", "score": round(min(0.95, base * 0.35 + 0.01), 3)},
+        {"disease": "囊性纤维化 (Cystic Fibrosis)", "score": round(min(0.95, base * 0.2 + 0.005), 3)},
+        {"disease": "α1-抗胰蛋白酶缺乏症 (Alpha-1 Antitrypsin Deficiency)", "score": round(min(0.95, base * 0.22 + 0.005), 3)},
+
+        # === 消化系统与肝胆疾病 (Digestive & Hepatobiliary Diseases) ===
+        {"disease": "克罗恩病 (Crohn's Disease)", "score": round(min(0.95, base * 0.42 + 0.03), 3)},
+        {"disease": "溃疡性结肠炎 (Ulcerative Colitis)", "score": round(min(0.95, base * 0.4 + 0.03), 3)},
+        {"disease": "乳糜泻/责任肠病 (Celiac Disease)", "score": round(min(0.95, base * 0.38 + 0.02), 3)},
+        {"disease": "非酒精性脂肪肝病 (NAFLD)", "score": round(min(0.95, base * 0.65 + 0.02), 3)},
+        {"disease": "原发性胆汁性胆管炎 (Primary Biliary Cholangitis)", "score": round(min(0.95, base * 0.3 + 0.01), 3)},
+        {"disease": "肝豆状核变性 (Wilson's Disease)", "score": round(min(0.95, base * 0.18 + 0.001), 3)},
+        {"disease": "血色病 (Hemochromatosis)", "score": round(min(0.95, base * 0.25 + 0.005), 3)},
+
+        # === 泌尿与生殖系统疾病 (Urological & Reproductive Diseases) ===
+        {"disease": "多囊肾病 (Polycystic Kidney Disease, PKD)", "score": round(min(0.95, base * 0.35 + 0.01), 3)},
+        {"disease": "IgA肾病 (IgA Nephropathy)", "score": round(min(0.95, base * 0.3 + 0.01), 3)},
+        {"disease": "肾病综合征 (Nephrotic Syndrome)", "score": round(min(0.95, base * 0.28 + 0.01), 3)},
+        {"disease": "子宫内膜异位症 (Endometriosis)", "score": round(min(0.95, base * 0.45 + 0.02), 3)},
+
+        # === 血液系统疾病 (Hematological Diseases) ===
+        {"disease": "地中海贫血 (Thalassemia)", "score": round(min(0.95, base * 0.25 + 0.005), 3)},
+        {"disease": "镰状细胞贫血 (Sickle Cell Anemia)", "score": round(min(0.95, base * 0.2 + 0.005), 3)},
+        {"disease": "血友病 (Hemophilia)", "score": round(min(0.95, base * 0.18 + 0.005), 3)},
+        {"disease": "蚕豆病/G6PD缺乏症 (G6PD Deficiency)", "score": round(min(0.95, base * 0.28 + 0.01), 3)},
+        {"disease": "深静脉血栓形成/因子V莱顿突变 (DVT/Factor V Leiden)", "score": round(min(0.95, base * 0.35 + 0.01), 3)},
+
+        # === 骨骼、肌肉与结缔组织疾病 (Musculoskeletal & Connective Tissue Diseases) ===
+        {"disease": "骨质疏松症 (Osteoporosis)", "score": round(min(0.95, base * 0.6 + 0.02), 3)},
+        {"disease": "骨关节炎 (Osteoarthritis)", "score": round(min(0.95, base * 0.65 + 0.02), 3)},
+        {"disease": "假性肥大型肌营养不良 (Duchenne/Becker Muscular Dystrophy)", "score": round(min(0.95, base * 0.15 + 0.001), 3)},
+        {"disease": "脊髓性肌萎缩症 (Spinal Muscular Atrophy, SMA)", "score": round(min(0.95, base * 0.16 + 0.001), 3)},
+        {"disease": "成骨不全症/脆骨病 (Osteogenesis Imperfecta)", "score": round(min(0.95, base * 0.12 + 0.001), 3)},
+
+        # === 眼科与耳鼻喉疾病 (Ophthalmological & ENT Diseases) ===
+        {"disease": "年龄相关性黄斑变性 (Age-related Macular Degeneration, AMD)", "score": round(min(0.95, base * 0.55 + 0.03), 3)},
+        {"disease": "青光眼 (Glaucoma)", "score": round(min(0.95, base * 0.5 + 0.02), 3)},
+        {"disease": "视网膜色素变性 (Retinitis Pigmentosa)", "score": round(min(0.95, base * 0.25 + 0.01), 3)},
+        {"disease": "先天性耳聋 (Congenital Hearing Loss)", "score": round(min(0.95, base * 0.3 + 0.01), 3)},
+
+        # === 皮肤科疾病 (Dermatological Diseases) ===
+        {"disease": "白癜风 (Vitiligo)", "score": round(min(0.95, base * 0.35 + 0.01), 3)},
+        {"disease": "斑秃 (Alopecia Areata)", "score": round(min(0.95, base * 0.38 + 0.01), 3)},
+        {"disease": "结节性硬化症 (Tuberous Sclerosis Complex)", "score": round(min(0.95, base * 0.15 + 0.001), 3)},
+
+        # === 罕见遗传病与代谢缺陷 (Rare Genetic & Metabolic Disorders) ===
+        {"disease": "苯丙酮尿症 (Phenylketonuria, PKU)", "score": round(min(0.95, base * 0.1 + 0.001), 3)},
+        {"disease": "戈谢病 (Gaucher Disease)", "score": round(min(0.95, base * 0.08 + 0.001), 3)},
+        {"disease": "法布里病 (Fabry Disease)", "score": round(min(0.95, base * 0.09 + 0.001), 3)},
+        {"disease": "庞贝病 (Pompe Disease)", "score": round(min(0.95, base * 0.07 + 0.001), 3)},
+        {"disease": "尼曼-匹克病 (Niemann-Pick Disease)", "score": round(min(0.95, base * 0.06 + 0.001), 3)},
+        {"disease": "马丁-贝尔综合征/脆性X综合征 (Fragile X Syndrome)", "score": round(min(0.95, base * 0.12 + 0.001), 3)},
+        {"disease": "唐氏综合征/21三体 (Down Syndrome)", "score": round(min(0.95, base * 0.05 + 0.001), 3)},
+        {"disease": "克氏综合征 (Klinefelter Syndrome)", "score": round(min(0.95, base * 0.05 + 0.001), 3)},
+        {"disease": "特纳综合征 (Turner Syndrome)", "score": round(min(0.95, base * 0.05 + 0.001), 3)}
     ]
+    # 按分数从高到低排序
+    predictions.sort(key=lambda x: x["score"], reverse=True)
+
     level = "low"
     if base >= 0.7:
         level = "high"
@@ -782,6 +964,7 @@ def _write_report(
     prediction: Dict[str, Any],
     bam_path: Path,
     variants: int,
+    filter_method: str = "GATK VariantFiltration (hard-filter)",
 ) -> None:
     lines = [
         "# Disease Association Report",
@@ -796,7 +979,7 @@ def _write_report(
         "- Alignment: BWA-MEM",
         "- BAM processing: samtools sort/index + GATK MarkDuplicates",
         "- Variant calling: GATK HaplotypeCaller",
-        "- Variant filtering: GATK VariantFiltration (hard-filter)",
+        f"- Variant filtering: {filter_method}",
         "",
         "## Outputs",
         f"- BAM: `{bam_path}`",
@@ -838,6 +1021,8 @@ def main() -> int:
     parser.add_argument("--qc-gate", action="store_true", help="Fail pipeline when QC threshold is not met")
     parser.add_argument("--run-bqsr", action="store_true", help="Run BQSR (requires --known-sites)")
     parser.add_argument("--known-sites", required=False, help="VCF file of known sites for BQSR")
+    parser.add_argument("--run-cnn", action="store_true", help="Run CNNScoreVariants + FilterVariantTranches instead of hard filtering")
+    parser.add_argument("--cnn-resource", required=False, help="VCF file of known sites for FilterVariantTranches (defaults to --known-sites if provided)")
     args = parser.parse_args()
 
     fastq_path = args.fastq or os.environ.get("FASTQ")
@@ -1057,8 +1242,22 @@ def main() -> int:
         raw_variants = _count_vcf_variants(raw_vcf)
         recorder.finish(n_vcf_header, stats={"variants": raw_variants})
 
-        n_filter = recorder.start("filter_variants_hard", {"vcf": str(raw_vcf)})
-        filtered_vcf = _filter_variants_hard(gatk_bin, raw_vcf, sample, outdir, node=n_filter)
+        if args.run_cnn:
+            cnn_res_str = args.cnn_resource or args.known_sites
+            if not cnn_res_str:
+                raise RuntimeError("--run-cnn requires --cnn-resource or --known-sites")
+            cnn_resource_path = Path(cnn_res_str).resolve()
+            
+            n_cnn = recorder.start("cnn_score_variants", {"vcf": str(raw_vcf), "ref": str(ref_fa)})
+            annotated_vcf = _run_cnn_score_variants(gatk_bin, raw_vcf, ref_fa, sample, outdir, node=n_cnn)
+            recorder.finish(n_cnn, outputs={"annotated_vcf": str(annotated_vcf)})
+            
+            n_filter = recorder.start("filter_variant_tranches", {"vcf": str(annotated_vcf), "resource": str(cnn_resource_path)})
+            filtered_vcf = _filter_variant_tranches(gatk_bin, annotated_vcf, cnn_resource_path, sample, outdir, node=n_filter)
+        else:
+            n_filter = recorder.start("filter_variants_hard", {"vcf": str(raw_vcf)})
+            filtered_vcf = _filter_variants_hard(gatk_bin, raw_vcf, sample, outdir, node=n_filter)
+            
         variants = _count_pass_variants(filtered_vcf)
         filtered_total = _count_vcf_variants(filtered_vcf)
         filter_stats = {
@@ -1095,7 +1294,8 @@ def main() -> int:
         )
 
         n_report = recorder.start("generate_markdown_report", {"report": str(report)})
-        _write_report(report, fastq1, fastq2, ref_fa, filtered_vcf, csv_file, prediction, dedup_bam, variants)
+        filter_method = "GATK CNNScoreVariants + FilterVariantTranches" if args.run_cnn else "GATK VariantFiltration (hard-filter)"
+        _write_report(report, fastq1, fastq2, ref_fa, filtered_vcf, csv_file, prediction, dedup_bam, variants, filter_method)
         recorder.finish(n_report, outputs={"report": str(report)})
 
         n_cleanup = recorder.start("cleanup_temp_files", {"sam": str(sam)})
