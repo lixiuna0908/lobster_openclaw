@@ -10,7 +10,7 @@ REF_PATH="${REF_PATH:-${ROOT_DIR}/refer_hg/hg38/hg38.fa.gz}"
 OUTDIR_PATH="${OUTDIR_PATH:-${ROOT_DIR}/test_data/out}"
 KNOWN_SITES_PATH="${KNOWN_SITES_PATH:-${ROOT_DIR}/dbsnp/dbsnp_hg38.vcf.gz}"
 RUN_BQSR="${RUN_BQSR:-0}"
-RUN_CNN="${RUN_CNN:-1}"
+RUN_CNN="${RUN_CNN:-0}"
 USE_LLM_TASK="${USE_LLM_TASK:-0}"
 # Lobster tool timeout for long steps like first-time hg38 bwa index.
 BIO_TOOL_TIMEOUT_MS="${BIO_TOOL_TIMEOUT_MS:-7200000}"
@@ -85,7 +85,7 @@ if use_llm_task:
         "input": {"note": "请基于上一阶段输出进行结构化验收"},
         "schema": schema,
     }
-    base_cmd = f"python3 openclaw/run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path} --known-sites {known_sites_path}"
+    base_cmd = f"python3 /Users/work/000code/github/openclaw/run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path} --known-sites {known_sites_path}"
     if fastq2_path:
         base_cmd += f" --fastq2 {fastq2_path}"
     if run_bqsr:
@@ -102,7 +102,7 @@ if use_llm_task:
     )
 else:
     # Stable mode: avoid llm-task schema variability.
-    base_cmd = f"python3 openclaw/run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path} --known-sites {known_sites_path}"
+    base_cmd = f"python3 /Users/work/000code/github/openclaw/run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path} --known-sites {known_sites_path}"
     if fastq2_path:
         base_cmd += f" --fastq2 {fastq2_path}"
     if run_bqsr:
