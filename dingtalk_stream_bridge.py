@@ -29,13 +29,13 @@ RUN_SCRIPT = ROOT_DIR / "run_bio_payload.sh"
 RUNTIME_DIR = ROOT_DIR / "dingtalk_runtime"
 RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
-CLIENT_ID = os.getenv("DINGTALK_STREAM_CLIENT_ID", "").strip()
-CLIENT_SECRET = os.getenv("DINGTALK_STREAM_CLIENT_SECRET", "").strip()
+CLIENT_ID = os.getenv("DINGTALK_STREAM_CLIENT_ID", "dingnidkqchjoxh6rr4j").strip()
+CLIENT_SECRET = os.getenv("DINGTALK_STREAM_CLIENT_SECRET", "uTM3I164R1bhMmcqjvqwJOpoFkKT0pCxFVq8mkhJSJZjnD3IEkS0Hz_lFbEoiQ-f").strip()
 DEFAULT_REPLY_WEBHOOK = os.getenv("DINGTALK_REPLY_WEBHOOK", "").strip()
 REPLY_SIGN_SECRET = os.getenv("DINGTALK_REPLY_SIGN_SECRET", "").strip()
 KEYWORDS = [
     kw.strip()
-    for kw in os.getenv("DINGTALK_KEYWORDS", "帮我运行,运行流程,开始处理,FASTQ,ref").split(",")
+    for kw in os.getenv("DINGTALK_KEYWORDS", "帮我运行,运行流程,开始处理,FASTQ,ref,重新运行").split(",")
     if kw.strip()
 ]
 RUN_TIMEOUT_SEC = int(os.getenv("BIO_RUN_TIMEOUT_SEC", "3600"))
@@ -112,7 +112,7 @@ def _extract_paths(text: str) -> Tuple[Optional[str], Optional[str], Optional[st
 
 
 def _should_run(text: str) -> bool:
-    run_words = ["帮我运行", "运行流程", "开始处理", "开始运行", "run", "执行"]
+    run_words = ["帮我运行", "运行流程", "开始处理", "开始运行", "run", "执行", "重新运行"]
     lower = text.lower()
     return any(w.lower() in lower for w in run_words)
 
@@ -166,10 +166,12 @@ def _load_json(path: Path) -> Dict[str, Any]:
 def _fmt_duration(seconds: float) -> str:
     sec = max(0, int(seconds))
     hours, rem = divmod(sec, 3600)
-    minutes, _ = divmod(rem, 60)
+    minutes, s = divmod(rem, 60)
     if hours > 0:
-        return f"{hours}小时{minutes}分钟"
-    return f"{minutes}分钟"
+        return f"{hours}小时{minutes}分{s}秒"
+    if minutes > 0:
+        return f"{minutes}分{s}秒"
+    return f"{s}秒"
 
 
 STAGE_LABELS: Dict[int, str] = {
@@ -201,39 +203,62 @@ NODE_TO_STAGE: Dict[str, int] = {
     "align_reads_bwa_mem": 3,
     "sort_bam_samtools": 4,
     "index_bam_samtools": 5,
+    "alignment_qc": 5,
+    "bqsr_recalibration": 5,
+    "index_recal_bam": 5,
     "call_variants_gatk_haplotypecaller": 6,
     "ensure_vcf_reference_header": 7,
+    "filter_variants_hard": 7,
+    "ensure_filtered_vcf_reference_header": 7,
     "convert_vcf_to_csv": 8,
     "disease_prediction_from_csv": 9,
     "generate_markdown_report": 10,
+    "cleanup_temp_files": 10,
 }
 
 
-def _load_stage_progress(outdir_path: Path, stage2_progress: int) -> Dict[int, int]:
+def _load_stage_progress(outdir_path: Path, stage2_progress: int) -> Tuple[Dict[int, int], Dict[int, float]]:
     progress: Dict[int, int] = {k: 0 for k in range(2, 11)}
+    durations: Dict[int, float] = {k: 0.0 for k in range(2, 11)}
     progress[2] = max(0, min(100, int(stage2_progress)))
     records = _load_json(outdir_path / "pipeline_node_records.json")
     nodes = records.get("nodes")
     if not isinstance(nodes, list):
-        return progress
+        return progress, durations
+    
+    # 记录已完成或正在运行的 stage
+    active_stages = set()
     for node in nodes:
         if not isinstance(node, dict):
             continue
         stage = NODE_TO_STAGE.get(str(node.get("name") or ""))
         if not stage:
             continue
+        
         status = str(node.get("status") or "")
+        durations[stage] += node.get("duration_ms", 0) / 1000.0
+        
         if status == "ok":
             progress[stage] = 100
+            active_stages.add(stage)
         elif status == "running":
             if progress[stage] == 0:
                 progress[stage] = 1
-    return progress
+            active_stages.add(stage)
+            
+    # 修正逻辑：如果 stage N 在运行或已完成，它之前的 stage 必须是 100%
+    if active_stages:
+        max_active_stage = max(active_stages)
+        for s in range(2, max_active_stage):
+            progress[s] = 100
+            
+    return progress, durations
 
 
 def _build_stage_status_text(
     *,
     stage_progress: Dict[int, int],
+    stage_durations: Dict[int, float],
     total_started_at: float,
     running: bool,
     finished_ok: bool,
@@ -245,13 +270,15 @@ def _build_stage_status_text(
         pct = 100 if finished_ok else max(0, min(100, int(stage_progress.get(stage, 0))))
         label = STAGE_LABELS[stage]
         est = STAGE_ESTIMATES.get(stage, 0.1)
+        display_idx = stage - 1
         if pct >= 100:
-            lines.append(f"{stage}、{label}：100%（耗时：已完成）")
+            dur = stage_durations.get(stage, 0.0)
+            lines.append(f"{display_idx}、{label}：100%（实际耗时：{_fmt_duration(dur)}）")
         elif pct <= 0:
-            lines.append(f"{stage}、{label}：0%（未开始，预计耗时：约{est}小时）")
+            lines.append(f"{display_idx}、{label}：0%（未开始，预计耗时：约{est}小时）")
         else:
             suffix = f"预计耗时：约{est}小时" if running else "已中断"
-            lines.append(f"{stage}、{label}：{pct}%（{suffix}）")
+            lines.append(f"{display_idx}、{label}：{pct}%（{suffix}）")
     return "\n".join(lines)
 
 
@@ -291,7 +318,15 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
     cmd = [str(RUN_SCRIPT), str(payload_path), str(result_path)]
     outdir_path = Path(outdir)
     progress_file = outdir_path / "bwa_index_progress.json"
-    initial_progress = _load_stage_progress(outdir_path, 0)
+    records_file = outdir_path / "pipeline_node_records.json"
+    
+    # 清除历史进度记录，防止“重新运行”时读取到上一轮100%的假象
+    if progress_file.exists():
+        progress_file.unlink(missing_ok=True)
+    if records_file.exists():
+        records_file.unlink(missing_ok=True)
+
+    initial_progress, initial_durations = _load_stage_progress(outdir_path, 0)
     start_msg = (
         "已开始执行生信流程。\n"
         f"FASTQ: {env['FASTQ_PATH']}\n"
@@ -299,6 +334,7 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
         f"OUTDIR: {env['OUTDIR_PATH']}\n\n"
         + _build_stage_status_text(
             stage_progress=initial_progress,
+            stage_durations=initial_durations,
             total_started_at=time.time(),
             running=True,
             finished_ok=False,
@@ -307,9 +343,6 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
     _send_dingtalk_text(webhook, start_msg)
 
     try:
-        if progress_file.exists():
-            progress_file.unlink(missing_ok=True)
-
         stdout_file = RUNTIME_DIR / f"{session_key}_{ts}_stdout.log"
         stderr_file = RUNTIME_DIR / f"{session_key}_{ts}_stderr.log"
         with stdout_file.open("w", encoding="utf-8") as out_fp, stderr_file.open("w", encoding="utf-8") as err_fp:
@@ -322,24 +355,66 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
                 text=True,
             )
             start_ts = time.time()
-            next_progress = 5
-            last_sent_progress = 0  # 追踪上一次推送的进度
+            last_sent_bwa_prog = 0
+            last_reported_stages_hash = ""
+            
             while True:
                 rc = proc.poll()
-                prog = _load_json(progress_file).get("progress")
-                if isinstance(prog, int):
-                    # 当进度达到 next_progress（比如5%的倍数），并且比上次推送至少多了5%
-                    if prog >= next_progress and prog >= last_sent_progress + 5:
-                        stage_progress = _load_stage_progress(outdir_path, prog)
+                prog_data = _load_json(progress_file)
+                bwa_prog = prog_data.get("progress") if prog_data else 0
+                bwa_prog = int(bwa_prog) if isinstance(bwa_prog, (int, float)) else 0
+                
+                stage_progress, stage_durations = _load_stage_progress(outdir_path, bwa_prog)
+                
+                # 读取记录中的内部节点进度（例如 HaplotypeCaller 报上来的进度）
+                node_prog = 0
+                records = _load_json(records_file)
+                nodes = records.get("nodes")
+                if isinstance(nodes, list) and len(nodes) > 0:
+                    current_node = nodes[-1]
+                    if current_node.get("status") == "running" and "progress" in current_node:
+                        node_prog = current_node.get("progress", 0)
+                        
+                        # 如果是变异检测节点，把它的进度更新到 stage_progress 的第6步
+                        stage = NODE_TO_STAGE.get(str(current_node.get("name") or ""))
+                        if stage and stage in stage_progress and stage_progress[stage] < 100:
+                            stage_progress[stage] = node_prog
+                            
+                other_stages_hash = str([(k, stage_progress[k]) for k in sorted(stage_progress.keys()) if k != 2])
+                
+                should_push = False
+                if other_stages_hash != last_reported_stages_hash:
+                    should_push = True
+                elif bwa_prog >= last_sent_bwa_prog + 5:
+                    should_push = True
+                elif node_prog > 0 and node_prog >= last_sent_bwa_prog + 5:
+                    # 借用 last_sent_bwa_prog 变量名作为通用的进度记录间隔(5%)
+                    should_push = True
+                    
+                # 如果是第一条进度，即使 hash 没变也推送一次真实进度，但要确保不推送全是0的状态
+                if last_reported_stages_hash == "" and (other_stages_hash != "[]" or bwa_prog > 0 or node_prog > 0):
+                    should_push = True
+                
+                if should_push:
+                    # 避免在完全没有开始时推送空状态
+                    if not (stage_progress.get(2, 0) == 0 and sum(stage_progress.values()) == 0):
                         panel = _build_stage_status_text(
                             stage_progress=stage_progress,
+                            stage_durations=stage_durations,
                             total_started_at=start_ts,
                             running=True,
                             finished_ok=False,
                         )
                         _send_dingtalk_text(webhook, panel)
-                        last_sent_progress = prog
-                        next_progress = ((prog // 5) + 1) * 5
+                        last_reported_stages_hash = other_stages_hash
+                        if bwa_prog >= last_sent_bwa_prog + 5:
+                            last_sent_bwa_prog = (bwa_prog // 5) * 5
+                        elif node_prog > 0 and node_prog >= last_sent_bwa_prog + 5:
+                            last_sent_bwa_prog = (node_prog // 5) * 5
+                    else:
+                        # 抑制了这次推送，重置状态以便后续可以正常推送
+                        last_reported_stages_hash = ""
+                
                 if rc is not None:
                     break
                 if time.time() - start_ts > RUN_TIMEOUT_SEC:
@@ -360,11 +435,14 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
                 f"CSV: {Path(outdir) / 'mutations.csv'}\n"
                 f"报告: {Path(outdir) / 'disease_association_report.md'}\n"
                 f"风险等级: {prediction.get('overall_risk_level', 'unknown')}\n"
+                f"综合得分: {prediction.get('overall_score', 'unknown')}\n"
                 f"变异数: {prediction.get('variant_count', 'unknown')}\n"
                 f"结果文件: {result_path}"
             )
+            final_progress, final_durations = _load_stage_progress(outdir_path, 100)
             final_panel = _build_stage_status_text(
                 stage_progress={k: 100 for k in range(2, 11)},
+                stage_durations=final_durations,
                 total_started_at=start_ts,
                 running=False,
                 finished_ok=True,
@@ -373,9 +451,10 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
         else:
             err = (proc_stderr or proc_stdout or "").strip()[-1200:]
             last_progress = int(_load_json(progress_file).get("progress") or 0)
-            failed_progress = _load_stage_progress(outdir_path, last_progress)
+            failed_progress, failed_durations = _load_stage_progress(outdir_path, last_progress)
             failed_panel = _build_stage_status_text(
                 stage_progress=failed_progress,
+                stage_durations=failed_durations,
                 total_started_at=start_ts,
                 running=False,
                 finished_ok=False,

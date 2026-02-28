@@ -7,6 +7,8 @@ OUT_FILE="${2:-bio_tools_invoke_result.json}"
 FASTQ_PATH="${FASTQ_PATH:-${ROOT_DIR}/test_data/sample1.fastq}"
 REF_PATH="${REF_PATH:-${ROOT_DIR}/refer_hg/hg38/hg38.fa.gz}"
 OUTDIR_PATH="${OUTDIR_PATH:-${ROOT_DIR}/test_data/out}"
+KNOWN_SITES_PATH="${KNOWN_SITES_PATH:-${ROOT_DIR}/dbsnp/dbsnp_hg19.vcf.gz}"
+RUN_BQSR="${RUN_BQSR:-0}"
 USE_LLM_TASK="${USE_LLM_TASK:-0}"
 # Lobster tool timeout for long steps like first-time hg38 bwa index.
 BIO_TOOL_TIMEOUT_MS="${BIO_TOOL_TIMEOUT_MS:-7200000}"
@@ -33,13 +35,14 @@ if [[ -z "${TOKEN}" ]]; then
   exit 1
 fi
 
-python3 - <<'PY' "$PAYLOAD_FILE" "$TOKEN" "$FASTQ_PATH" "$REF_PATH" "$OUTDIR_PATH" "$USE_LLM_TASK" "$BIO_TOOL_TIMEOUT_MS"
+python3 - <<'PY' "$PAYLOAD_FILE" "$TOKEN" "$FASTQ_PATH" "$REF_PATH" "$OUTDIR_PATH" "$KNOWN_SITES_PATH" "$RUN_BQSR" "$USE_LLM_TASK" "$BIO_TOOL_TIMEOUT_MS"
 import json
 import sys
 
-payload_file, token, fastq_path, ref_path, outdir_path, use_llm_task, timeout_ms = sys.argv[1:8]
-use_llm_task = use_llm_task == "1"
-timeout_ms = int(timeout_ms)
+payload_file, token, fastq_path, ref_path, outdir_path, known_sites_path, run_bqsr_str, use_llm_task_str, timeout_ms_str = sys.argv[1:10]
+use_llm_task = use_llm_task_str == "1"
+run_bqsr = run_bqsr_str == "1"
+timeout_ms = int(timeout_ms_str)
 
 schema = {
     "type": "object",
@@ -79,18 +82,26 @@ if use_llm_task:
         "input": {"note": "请基于上一阶段输出进行结构化验收"},
         "schema": schema,
     }
+    base_cmd = f"python3 run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path} --known-sites {known_sites_path}"
+    if run_bqsr:
+        base_cmd += " --run-bqsr"
+        
     pipeline = (
         "exec --json --shell "
-        f"'python3 run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path}' "
+        f"'{base_cmd}' "
         f"| clawd.invoke --url http://127.0.0.1:18789 --token {token} "
         "--tool llm-task --action json --args-json "
         f"'{json.dumps(llm_args, ensure_ascii=False, separators=(',', ':'))}'"
     )
 else:
     # Stable mode: avoid llm-task schema variability.
+    base_cmd = f"python3 run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path} --known-sites {known_sites_path}"
+    if run_bqsr:
+        base_cmd += " --run-bqsr"
+        
     pipeline = (
         "exec --json --shell "
-        f"'python3 run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path}'"
+        f"'{base_cmd}'"
     )
 
 payload = {

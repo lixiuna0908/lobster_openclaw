@@ -50,6 +50,7 @@ class NodeRecorder:
             "commands": [],
         }
         self.nodes.append(node)
+        self.write("running")  # 将刚启动的状态落盘，以便监控程序读取
         return node
 
     def finish(
@@ -70,6 +71,16 @@ class NodeRecorder:
             node["stats"] = stats
         if error:
             node["error"] = error
+        self.write("running")  # 每次节点完成也立刻落盘
+
+    def write_progress(self, status: str, progress: int) -> None:
+        # 新增方法，用于报告当前活动节点的进度（比如 HaplotypeCaller 的5%）
+        if not self.nodes:
+            return
+        # 假设最后一个节点是当前正在运行的节点
+        current_node = self.nodes[-1]
+        current_node["progress"] = progress
+        self.write(status)
 
     def record_command(self, node: Dict[str, Any], cmd: List[str], elapsed_ms: int) -> None:
         node["commands"].append({"cmd": cmd, "elapsed_ms": elapsed_ms})
@@ -85,18 +96,50 @@ class NodeRecorder:
         }
         if error:
             payload["error"] = error
+            
+        # 安全写入：先写临时文件再重命名，防止其它进程读到只写了一半的 JSON
         out = self.outdir / "pipeline_node_records.json"
-        out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_out = out.with_suffix(".json.tmp")
+        tmp_out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_out.replace(out)
         return out
 
 
-def _run(cmd: List[str], node: Optional[Dict[str, Any]] = None, cwd: Optional[Path] = None) -> int:
+def _run_with_progress(cmd: List[str], node: Optional[Dict[str, Any]] = None, cwd: Optional[Path] = None, recorder: Optional[Any] = None) -> int:
     t0 = time.time()
-    subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True, stdout=sys.stderr)
+    
+    # 检查是否是 GATK HaplotypeCaller 这种支持进度输出的命令
+    if any("HaplotypeCaller" in c for c in cmd):
+        proc = subprocess.Popen(
+            cmd,
+            stdout=sys.stderr,
+            stderr=subprocess.PIPE,
+            cwd=str(cwd) if cwd else None,
+            text=True,
+            bufsize=1,
+        )
+        assert proc.stderr is not None
+        for line in proc.stderr:
+            sys.stderr.write(line)
+            # GATK typical progress line: 12:34:56.789 INFO  ProgressMeter - ... 5.0% ...
+            if "ProgressMeter" in line:
+                m = re.search(r"(\d+\.\d+)%", line)
+                if m and recorder:
+                    prog_val = float(m.group(1))
+                    recorder.write_progress("running", int(prog_val))
+        proc.wait()
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
+    else:
+        subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True, stdout=sys.stderr)
+        
     elapsed_ms = int((time.time() - t0) * 1000)
     if node is not None:
         node["commands"].append({"cmd": cmd, "elapsed_ms": elapsed_ms})
     return elapsed_ms
+
+def _run(cmd: List[str], node: Optional[Dict[str, Any]] = None, cwd: Optional[Path] = None) -> int:
+    return _run_with_progress(cmd, node, cwd)
 
 
 def _write_bwa_index_progress(outdir: Path, progress: int) -> None:
@@ -468,6 +511,115 @@ def _mark_duplicates(
     }
 
 
+def _bam_qc(samtools_bin: str, bam: Path, outdir: Path, node: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    qc_dir = outdir / "qc"
+    qc_dir.mkdir(parents=True, exist_ok=True)
+    
+    flagstat_txt = qc_dir / "bam_flagstat.txt"
+    cmd_flagstat = [samtools_bin, "flagstat", str(bam)]
+    t0 = time.time()
+    with flagstat_txt.open("w") as f:
+        subprocess.run(cmd_flagstat, stdout=f, check=True)
+    if node is not None:
+        node["commands"].append({"cmd": cmd_flagstat, "elapsed_ms": int((time.time() - t0) * 1000)})
+        
+    stats_txt = qc_dir / "bam_stats.txt"
+    cmd_stats = [samtools_bin, "stats", str(bam)]
+    t0 = time.time()
+    with stats_txt.open("w") as f:
+        subprocess.run(cmd_stats, stdout=f, check=True)
+    if node is not None:
+        node["commands"].append({"cmd": cmd_stats, "elapsed_ms": int((time.time() - t0) * 1000)})
+        
+    coverage_txt = qc_dir / "bam_coverage.txt"
+    cmd_cov = [samtools_bin, "coverage", str(bam)]
+    t0 = time.time()
+    with coverage_txt.open("w") as f:
+        subprocess.run(cmd_cov, stdout=f, check=True)
+    if node is not None:
+        node["commands"].append({"cmd": cmd_cov, "elapsed_ms": int((time.time() - t0) * 1000)})
+        
+    reads_mapped = 0
+    reads_total = 0
+    reads_duplicated = 0
+    with stats_txt.open("r") as f:
+        for line in f:
+            if line.startswith("SN\t"):
+                parts = line.split("\t")
+                if parts[1] == "raw total sequences:":
+                    reads_total = int(parts[2])
+                elif parts[1] == "reads mapped:":
+                    reads_mapped = int(parts[2])
+                elif parts[1] == "reads duplicated:":
+                    reads_duplicated = int(parts[2])
+                    
+    mapping_rate = (reads_mapped / reads_total) if reads_total > 0 else 0.0
+    duplicate_rate = (reads_duplicated / reads_total) if reads_total > 0 else 0.0
+        
+    total_covbases = 0
+    total_len = 0
+    sum_depth_len = 0.0
+    with coverage_txt.open("r") as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) >= 7:
+                length = int(parts[2]) - int(parts[1]) + 1
+                covbases = int(parts[4])
+                depth = float(parts[6])
+                total_covbases += covbases
+                total_len += length
+                sum_depth_len += depth * length
+                
+    mean_depth = (sum_depth_len / total_len) if total_len > 0 else 0.0
+    coverage = (total_covbases / total_len) if total_len > 0 else 0.0
+        
+    stats = {
+        "mapping_rate": round(mapping_rate, 4),
+        "duplicate_rate": round(duplicate_rate, 4),
+        "mean_depth": round(mean_depth, 4),
+        "coverage": round(coverage, 4)
+    }
+    
+    qc_json = qc_dir / "alignment_qc.json"
+    qc_json.write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
+    
+    return {
+        "alignment_qc_json": str(qc_json),
+        "stats": stats
+    }
+
+
+def _run_bqsr(gatk_bin: str, bam: Path, ref_fa: Path, known_sites: Path, sample: str, outdir: Path, node: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    recal_table = outdir / f"{sample}.recal.table"
+    recal_bam = outdir / f"{sample}.recal.bam"
+    
+    cmd1 = [
+        gatk_bin, "BaseRecalibrator",
+        "-I", str(bam),
+        "-R", str(ref_fa),
+        "--known-sites", str(known_sites),
+        "-O", str(recal_table)
+    ]
+    _run(cmd1, node=node)
+    
+    cmd2 = [
+        gatk_bin, "ApplyBQSR",
+        "-I", str(bam),
+        "-R", str(ref_fa),
+        "--bqsr-recal-file", str(recal_table),
+        "-O", str(recal_bam)
+    ]
+    _run(cmd2, node=node)
+    
+    return {
+        "recal_bam": str(recal_bam),
+        "recal_table": str(recal_table)
+    }
+
+
+
 def _filter_variants_hard(
     gatk_bin: str,
     raw_vcf: Path,
@@ -601,6 +753,7 @@ def _predict_disease(csv_path: Path) -> Dict[str, Any]:
         level = "moderate"
     return {
         "overall_risk_level": level,
+        "overall_score": round(base, 3),
         "variant_count": variant_count,
         "high_risk_variant_count": high_risk_count,
         "mean_af": round(mean_af, 4),
@@ -642,6 +795,7 @@ def _write_report(
         "",
         "## Disease Prediction",
         f"- Overall risk level: `{prediction['overall_risk_level']}`",
+        f"- Overall score: `{prediction['overall_score']}`",
         f"- Mean AF: `{prediction['mean_af']}`",
         f"- High-risk variants: `{prediction['high_risk_variant_count']}` / `{prediction['variant_count']}`",
         "",
@@ -671,6 +825,8 @@ def main() -> int:
     parser.add_argument("--min-qscore", type=int, default=20, help="Minimum quality threshold for trimming")
     parser.add_argument("--max-n-rate", type=float, default=0.1, help="Maximum allowed N base ratio in FASTQ")
     parser.add_argument("--qc-gate", action="store_true", help="Fail pipeline when QC threshold is not met")
+    parser.add_argument("--run-bqsr", action="store_true", help="Run BQSR (requires --known-sites)")
+    parser.add_argument("--known-sites", required=False, help="VCF file of known sites for BQSR")
     args = parser.parse_args()
 
     fastq_path = args.fastq or os.environ.get("FASTQ")
@@ -851,8 +1007,25 @@ def main() -> int:
         _run([samtools_bin, "index", str(dedup_bam)], node=n_bam_idx)
         recorder.finish(n_bam_idx, outputs={"bai": str(Path(str(dedup_bam) + ".bai"))})
 
+        n_align_qc = recorder.start("alignment_qc", {"bam": str(dedup_bam)})
+        align_qc_res = _bam_qc(samtools_bin, dedup_bam, outdir, node=n_align_qc)
+        recorder.finish(n_align_qc, outputs={"alignment_qc_json": align_qc_res["alignment_qc_json"]}, stats=align_qc_res["stats"])
+
+        if args.run_bqsr:
+            if not args.known_sites:
+                raise RuntimeError("--run-bqsr requires --known-sites")
+            known_sites_path = Path(args.known_sites).resolve()
+            n_bqsr = recorder.start("bqsr_recalibration", {"bam": str(dedup_bam), "known_sites": str(known_sites_path)})
+            bqsr_res = _run_bqsr(gatk_bin, dedup_bam, ref_fa, known_sites_path, sample, outdir, node=n_bqsr)
+            dedup_bam = Path(bqsr_res["recal_bam"]).resolve()
+            recorder.finish(n_bqsr, outputs={"recal_bam": str(dedup_bam), "recal_table": bqsr_res["recal_table"]})
+            
+            n_recal_idx = recorder.start("index_recal_bam", {"bam": str(dedup_bam)})
+            _run([samtools_bin, "index", str(dedup_bam)], node=n_recal_idx)
+            recorder.finish(n_recal_idx, outputs={"bai": str(Path(str(dedup_bam) + ".bai"))})
+
         n_call = recorder.start("call_variants_gatk_haplotypecaller", {"bam": str(dedup_bam), "ref": str(ref_fa)})
-        _run(
+        _run_with_progress(
             [
                 gatk_bin,
                 "HaplotypeCaller",
@@ -864,6 +1037,7 @@ def main() -> int:
                 str(raw_vcf),
             ],
             node=n_call,
+            recorder=recorder
         )
         recorder.finish(n_call, outputs={"vcf": str(raw_vcf)})
 

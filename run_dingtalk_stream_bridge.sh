@@ -20,6 +20,10 @@ if [[ -d "$HOME/miniconda3/bin" ]]; then
   export PATH="$HOME/miniconda3/bin:$PATH"
 fi
 
+# 这里用硬编码替换成你当前机器人的凭证（刚才日志中暴露的或者钉钉后台最新的）
+export DINGTALK_STREAM_CLIENT_ID="dingnidkqchjoxh6rr4j"
+export DINGTALK_STREAM_CLIENT_SECRET="uTM3I164R1bhMmcqjvqwJOpoFkKT0pCxFVq8mkhJSJZjnD3IEkS0Hz_lFbEoiQ-f"
+
 if [[ -z "${DINGTALK_STREAM_CLIENT_ID:-}" || -z "${DINGTALK_STREAM_CLIENT_SECRET:-}" ]]; then
   echo "[ERROR] 请先设置 DINGTALK_STREAM_CLIENT_ID / DINGTALK_STREAM_CLIENT_SECRET"
   echo "[HINT] export DINGTALK_STREAM_CLIENT_ID='你的ClientId'"
