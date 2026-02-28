@@ -85,7 +85,7 @@ if use_llm_task:
         "input": {"note": "请基于上一阶段输出进行结构化验收"},
         "schema": schema,
     }
-    base_cmd = f"python3 run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path} --known-sites {known_sites_path}"
+    base_cmd = f"python3 openclaw/run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path} --known-sites {known_sites_path}"
     if fastq2_path:
         base_cmd += f" --fastq2 {fastq2_path}"
     if run_bqsr:
@@ -102,7 +102,7 @@ if use_llm_task:
     )
 else:
     # Stable mode: avoid llm-task schema variability.
-    base_cmd = f"python3 run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path} --known-sites {known_sites_path}"
+    base_cmd = f"python3 openclaw/run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path} --known-sites {known_sites_path}"
     if fastq2_path:
         base_cmd += f" --fastq2 {fastq2_path}"
     if run_bqsr:
