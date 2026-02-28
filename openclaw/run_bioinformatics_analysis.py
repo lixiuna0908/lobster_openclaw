@@ -627,6 +627,11 @@ def _filter_variants_hard(
     outdir: Path,
     node: Optional[Dict[str, Any]] = None,
 ) -> Path:
+    """
+    使用 GATK 推荐的单样本硬过滤标准进行变异过滤。
+    针对 SNP 的典型硬过滤指标：
+    QD < 2.0 || FS > 60.0 || MQ < 40.0 || MQRankSum < -12.5 || ReadPosRankSum < -8.0 || QUAL < 30.0 || DP < 10
+    """
     filtered_vcf = outdir / f"{sample}.variants.filtered.vcf"
     cmd = [
         gatk_bin,
@@ -635,14 +640,20 @@ def _filter_variants_hard(
         str(raw_vcf),
         "-O",
         str(filtered_vcf),
-        "--filter-name",
-        "LOW_QUAL",
-        "--filter-expression",
-        "QUAL < 30.0",
-        "--filter-name",
-        "LOW_DP",
-        "--filter-expression",
-        "DP < 10",
+        "--filter-name", "LOW_QUAL",
+        "--filter-expression", "QUAL < 30.0",
+        "--filter-name", "LOW_DP",
+        "--filter-expression", "DP < 10",
+        "--filter-name", "LOW_QD",
+        "--filter-expression", "QD < 2.0",
+        "--filter-name", "HIGH_FS",
+        "--filter-expression", "FS > 60.0",
+        "--filter-name", "LOW_MQ",
+        "--filter-expression", "MQ < 40.0",
+        "--filter-name", "LOW_MQRankSum",
+        "--filter-expression", "MQRankSum < -12.5",
+        "--filter-name", "LOW_ReadPosRankSum",
+        "--filter-expression", "ReadPosRankSum < -8.0",
     ]
     _run(cmd, node=node)
     return filtered_vcf
