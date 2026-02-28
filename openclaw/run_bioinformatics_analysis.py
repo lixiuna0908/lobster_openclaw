@@ -632,6 +632,15 @@ def _run_cnn_score_variants(
     使用 GATK 内置的 1D CNN 模型对变异进行打分。
     """
     annotated_vcf = outdir / f"{sample}.variants.cnn_scored.vcf"
+    
+    # GATK CNNScoreVariants internally relies on python.
+    # In some environments, only python3 is available. We set an environment variable to override it.
+    env = os.environ.copy()
+    if not shutil.which("python") and shutil.which("python3"):
+        # Not perfect, but a common workaround for conda gatk python wrapper issues is to symlink or rely on env.
+        # Alternatively, we just pass the path to the current python3 executable.
+        pass
+        
     cmd = [
         gatk_bin,
         "CNNScoreVariants",
@@ -639,7 +648,28 @@ def _run_cnn_score_variants(
         "-R", str(ref_fa),
         "-O", str(annotated_vcf),
     ]
-    _run(cmd, node=node)
+    # To fix 'env: python: No such file or directory', we wrap the execution if needed,
+    # or just use the current conda python.
+    # Wait, the best fix is to ensure the environment has 'python' by prefixing PATH with a temp dir containing a symlink,
+    # or easier: GATK 4 actually allows specifying the python path if needed? No, the gatk wrapper script has `env python`.
+    
+    # Let's dynamically create a symlink to python3 in a tmp bin dir and add it to PATH.
+    tmp_bin = outdir / "tmp_bin"
+    tmp_bin.mkdir(exist_ok=True)
+    python_symlink = tmp_bin / "python"
+    if not python_symlink.exists():
+        python3_path = shutil.which("python3")
+        if python3_path:
+            os.symlink(python3_path, python_symlink)
+    
+    env["PATH"] = f"{tmp_bin}{os.pathsep}{env.get('PATH', '')}"
+
+    t0 = time.time()
+    subprocess.run(cmd, env=env, check=True, stdout=sys.stderr, stderr=subprocess.STDOUT)
+    elapsed_ms = int((time.time() - t0) * 1000)
+    if node is not None:
+        node["commands"].append({"cmd": cmd, "elapsed_ms": elapsed_ms})
+        
     return annotated_vcf
 
 
