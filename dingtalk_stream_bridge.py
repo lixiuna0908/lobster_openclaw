@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -50,6 +51,8 @@ LOG_ALL_TOPICS = os.getenv("DINGTALK_STREAM_LOG_ALL_TOPICS", "1").strip() not in
 
 STATUS_CHECK_WEBHOOK_FILE = RUNTIME_DIR / "status_check_webhook.txt"
 LAST_PUSHED_ERROR_FILE = RUNTIME_DIR / "last_pushed_error.txt"
+CURRENT_PIPELINE_PID_FILE = RUNTIME_DIR / "current_pipeline_pid.txt"
+STATUS_CHECK_LOG = RUNTIME_DIR / "status_check.log"
 
 
 @dataclass
@@ -135,9 +138,24 @@ def _should_run(text: str) -> bool:
     return any(w.lower() in lower for w in run_words)
 
 
+def _log_send_attempt(webhook: str, outcome: str, detail: str = "") -> None:
+    """记录每次发送尝试，便于排查无回复。"""
+    try:
+        with open(RUNTIME_DIR / "dingtalk_reply_ok.log", "a", encoding="utf-8") as f:
+            f.write(
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} attempt outcome={outcome} "
+                f"webhook_len={len(webhook) if webhook else 0}{' ' + detail if detail else ''}\n"
+            )
+    except Exception:
+        pass
+
+
 def _send_dingtalk_text(webhook: str, content: str) -> None:
     if not webhook:
+        print("[WARN] 钉钉推送跳过：webhook 为空", flush=True)
+        _log_send_attempt("", "skip_empty_webhook")
         return
+    _log_send_attempt(webhook, "start")
     try:
         target_webhook = _build_signed_webhook(webhook)
         if "<font" in content or "##" in content:
@@ -161,8 +179,26 @@ def _send_dingtalk_text(webhook: str, content: str) -> None:
         )
         if resp.status_code != 200:
             print(f"[WARN] 钉钉推送 HTTP {resp.status_code}: {resp.text[:200]}", flush=True)
+            _log_send_attempt(webhook, "http_error", f"status={resp.status_code} body={resp.text[:200]!r}")
+            try:
+                (RUNTIME_DIR / "dingtalk_reply_fail.log").write_text(
+                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} HTTP {resp.status_code}\n{resp.text[:500]}\n",
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+        else:
+            _log_send_attempt(webhook, "ok")
     except Exception as e:
         print(f"[WARN] 钉钉推送失败: {e}", flush=True)
+        _log_send_attempt(webhook, "exception", str(e)[:100])
+        try:
+            (RUNTIME_DIR / "dingtalk_reply_fail.log").write_text(
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} exception: {e}\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
 
 def _build_signed_webhook(webhook: str) -> str:
@@ -636,8 +672,19 @@ def _build_stage_status_text(
     return "\n".join(lines)
 
 
+def _append_status_check_log(line: str) -> None:
+    """追加一行到 status_check 日志，仅记录不推送。"""
+    try:
+        with open(STATUS_CHECK_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+            if not line.endswith("\n"):
+                f.write("\n")
+    except Exception:
+        pass
+
+
 def _check_pipeline_error_and_notify() -> None:
-    """检查生信流程是否有报错，若有则向钉钉推送一次（同一次错误不重复推送）。"""
+    """每半小时检查：无报错仅记「正常」日志；有报错则杀进程、记日志、推钉钉（同一次错误不重复推送）。"""
     try:
         if not STATUS_CHECK_WEBHOOK_FILE.exists():
             return
@@ -677,9 +724,13 @@ def _check_pipeline_error_and_notify() -> None:
             if not error_key:
                 error_key = f"result:{latest_result}"
 
+    ts_str = time.strftime("%Y-%m-%d %H:%M:%S")
+
     if not error_parts:
+        _append_status_check_log(f"{ts_str} status_check ok")
         return
 
+    # 有报错：杀进程、记日志、推钉钉（同一次错误不重复推送）
     last_pushed = ""
     if LAST_PUSHED_ERROR_FILE.exists():
         try:
@@ -689,7 +740,38 @@ def _check_pipeline_error_and_notify() -> None:
     if error_key and error_key == last_pushed:
         return
 
+    kill_log = ""
+    if CURRENT_PIPELINE_PID_FILE.exists():
+        try:
+            pid_str = CURRENT_PIPELINE_PID_FILE.read_text(encoding="utf-8").strip()
+            pid = int(pid_str)
+            try:
+                if hasattr(os, "killpg"):
+                    os.killpg(pid, signal.SIGTERM)
+                    kill_log = f" 已杀进程组 pid={pid}"
+                else:
+                    os.kill(pid, signal.SIGTERM)
+                    kill_log = f" 已杀进程 pid={pid}"
+            except ProcessLookupError:
+                kill_log = f" 进程已退出 pid={pid}"
+            except Exception as e:
+                kill_log = f" 杀进程异常 pid={pid} err={e}"
+            try:
+                CURRENT_PIPELINE_PID_FILE.unlink(missing_ok=True)
+            except Exception:
+                pass
+        except (ValueError, OSError) as e:
+            kill_log = f" 读/杀 PID 异常: {e}"
+            try:
+                CURRENT_PIPELINE_PID_FILE.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    _append_status_check_log(f"{ts_str} error_detected{kill_log} {error_key or 'unknown'}")
+
     msg = "【生信流程状态检查】检测到报错：\n\n" + "\n\n".join(error_parts)
+    if kill_log.strip():
+        msg += "\n\n已终止流程进程。"
     _send_dingtalk_text(webhook, msg)
     try:
         if error_key:
@@ -789,7 +871,12 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
                 stdout=out_fp,
                 stderr=err_fp,
                 text=True,
+                start_new_session=True,
             )
+            try:
+                CURRENT_PIPELINE_PID_FILE.write_text(str(proc.pid), encoding="utf-8")
+            except Exception:
+                pass
             start_ts = time.time()
             last_sent_bwa_prog = 0
             last_reported_stages_hash = ""
@@ -920,9 +1007,31 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
             _send_dingtalk_text(webhook, f"{failed_panel}\n\n流程失败（exit={rc}）。\n{err_line}{err}\n结果文件: {result_path}")
     except Exception as exc:
         _send_dingtalk_text(webhook, f"流程异常：{exc}")
+    finally:
+        try:
+            CURRENT_PIPELINE_PID_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def _handle_message(payload: Dict[str, Any]) -> None:
+    try:
+        _handle_message_impl(payload)
+    except Exception as e:
+        print(f"[WARN] _handle_message 异常: {e}", flush=True)
+        try:
+            (RUNTIME_DIR / "dingtalk_handle_error.log").write_text(
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} {e}\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        webhook = str(payload.get("sessionWebhook") or payload.get("conversationWebhook") or DEFAULT_REPLY_WEBHOOK).strip()
+        if webhook:
+            _send_dingtalk_text(webhook, f"处理消息时发生异常，请稍后重试。{e}")
+
+
+def _handle_message_impl(payload: Dict[str, Any]) -> None:
     text = _normalize_text(payload)
     webhook = str(payload.get("sessionWebhook") or payload.get("conversationWebhook") or DEFAULT_REPLY_WEBHOOK).strip()
 

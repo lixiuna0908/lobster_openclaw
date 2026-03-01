@@ -15,8 +15,8 @@ KNOWN_SITES_PATH="${KNOWN_SITES_PATH:-${ROOT_DIR}/dbsnp/dbsnp_hg38.vcf.gz}"
 RUN_BQSR="${RUN_BQSR:-0}"
 RUN_CNN="${RUN_CNN:-1}"
 USE_LLM_TASK="${USE_LLM_TASK:-0}"
-# Lobster tool timeout for long steps like first-time hg38 bwa index.
-BIO_TOOL_TIMEOUT_MS="${BIO_TOOL_TIMEOUT_MS:-7200000}"
+# Lobster 工具超时：默认不设整体超时（约 24.8 天），仅靠每半小时检查报错并杀进程。
+BIO_TOOL_TIMEOUT_MS="${BIO_TOOL_TIMEOUT_MS:-2147483647}"
 
 # Ensure conda base tools (e.g. gatk) are resolvable.
 if [[ -d "$HOME/miniconda3/bin" ]]; then
