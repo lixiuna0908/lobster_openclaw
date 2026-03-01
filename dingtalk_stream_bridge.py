@@ -128,9 +128,23 @@ def _send_dingtalk_text(webhook: str, content: str) -> None:
         return
     try:
         target_webhook = _build_signed_webhook(webhook)
+        if "<font" in content or "##" in content:
+            # Auto-detect markdown
+            payload = {
+                "msgtype": "markdown",
+                "markdown": {
+                    "title": "生信流程通知",
+                    "text": content.replace("\n", " \n\n")
+                }
+            }
+        else:
+            payload = {
+                "msgtype": "text",
+                "text": {"content": content}
+            }
         requests.post(
             target_webhook,
-            json={"msgtype": "text", "text": {"content": content}},
+            json=payload,
             timeout=10,
         )
     except Exception:
@@ -215,7 +229,7 @@ NODE_TO_STAGE: Dict[str, int] = {
     "call_variants_gatk_haplotypecaller": 6,
     "ensure_vcf_reference_header": 7,
     "filter_variants_hard": 7,
-    "cnn_score_variants": 7,
+    "nv_score_variants": 7,
     "filter_variant_tranches": 7,
     "ensure_filtered_vcf_reference_header": 7,
     "convert_vcf_to_csv": 8,
@@ -281,7 +295,7 @@ def _build_stage_status_text(
         display_idx = stage - 1
         if pct >= 100:
             dur = stage_durations.get(stage, 0.0)
-            lines.append(f"{display_idx}、{label}：100%（实际耗时：{_fmt_duration(dur)}）")
+            lines.append(f"<font color=\"#00A600\">{display_idx}、{label}：100%（实际耗时：{_fmt_duration(dur)}）</font>")
         elif pct <= 0:
             lines.append(f"{display_idx}、{label}：0%（未开始，预计耗时：约{est}小时）")
         else:

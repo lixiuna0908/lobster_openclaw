@@ -620,7 +620,7 @@ def _run_bqsr(gatk_bin: str, bam: Path, ref_fa: Path, known_sites: Path, sample:
 
 
 
-def _run_cnn_score_variants(
+def _run_nv_score_variants(
     gatk_bin: str,
     raw_vcf: Path,
     ref_fa: Path,
@@ -632,44 +632,14 @@ def _run_cnn_score_variants(
     使用 GATK 内置的 1D CNN 模型对变异进行打分。
     """
     annotated_vcf = outdir / f"{sample}.variants.cnn_scored.vcf"
-    
-    # GATK CNNScoreVariants internally relies on python.
-    # In some environments, only python3 is available. We set an environment variable to override it.
-    env = os.environ.copy()
-    if not shutil.which("python") and shutil.which("python3"):
-        # Not perfect, but a common workaround for conda gatk python wrapper issues is to symlink or rely on env.
-        # Alternatively, we just pass the path to the current python3 executable.
-        pass
-        
     cmd = [
         gatk_bin,
-        "CNNScoreVariants",
+        "NVScoreVariants",
         "-V", str(raw_vcf),
         "-R", str(ref_fa),
         "-O", str(annotated_vcf),
     ]
-    # To fix 'env: python: No such file or directory', we wrap the execution if needed,
-    # or just use the current conda python.
-    # Wait, the best fix is to ensure the environment has 'python' by prefixing PATH with a temp dir containing a symlink,
-    # or easier: GATK 4 actually allows specifying the python path if needed? No, the gatk wrapper script has `env python`.
-    
-    # Let's dynamically create a symlink to python3 in a tmp bin dir and add it to PATH.
-    tmp_bin = outdir / "tmp_bin"
-    tmp_bin.mkdir(exist_ok=True)
-    python_symlink = tmp_bin / "python"
-    if not python_symlink.exists():
-        python3_path = shutil.which("python3")
-        if python3_path:
-            os.symlink(python3_path, python_symlink)
-    
-    env["PATH"] = f"{tmp_bin}{os.pathsep}{env.get('PATH', '')}"
-
-    t0 = time.time()
-    subprocess.run(cmd, env=env, check=True, stdout=sys.stderr, stderr=subprocess.STDOUT)
-    elapsed_ms = int((time.time() - t0) * 1000)
-    if node is not None:
-        node["commands"].append({"cmd": cmd, "elapsed_ms": elapsed_ms})
-        
+    _run(cmd, node=node)
     return annotated_vcf
 
 
@@ -1051,7 +1021,8 @@ def main() -> int:
     parser.add_argument("--qc-gate", action="store_true", help="Fail pipeline when QC threshold is not met")
     parser.add_argument("--run-bqsr", action="store_true", help="Run BQSR (requires --known-sites)")
     parser.add_argument("--known-sites", required=False, help="VCF file of known sites for BQSR")
-    parser.add_argument("--run-cnn", action="store_true", help="Run CNNScoreVariants + FilterVariantTranches instead of hard filtering")
+    parser.add_argument("--run-cnn", action="store_true", help="Run NVScoreVariants + FilterVariantTranches instead of hard filtering")
+    parser.add_argument("--fix-vcf-header", action="store_true", help="Fix VCF header for CNN variants", default=True)
     parser.add_argument("--cnn-resource", required=False, help="VCF file of known sites for FilterVariantTranches (defaults to --known-sites if provided)")
     args = parser.parse_args()
 
@@ -1278,12 +1249,93 @@ def main() -> int:
                 raise RuntimeError("--run-cnn requires --cnn-resource or --known-sites")
             cnn_resource_path = Path(cnn_res_str).resolve()
             
-            n_cnn = recorder.start("cnn_score_variants", {"vcf": str(raw_vcf), "ref": str(ref_fa)})
-            annotated_vcf = _run_cnn_score_variants(gatk_bin, raw_vcf, ref_fa, sample, outdir, node=n_cnn)
-            recorder.finish(n_cnn, outputs={"annotated_vcf": str(annotated_vcf)})
-            
-            n_filter = recorder.start("filter_variant_tranches", {"vcf": str(annotated_vcf), "resource": str(cnn_resource_path)})
-            filtered_vcf = _filter_variant_tranches(gatk_bin, annotated_vcf, cnn_resource_path, sample, outdir, node=n_filter)
+            if raw_variants == 0:
+                print(f"[INFO] No variants found in {raw_vcf}. Skipping CNN scoring and filtering.")
+                filtered_vcf = outdir / f"{sample}.variants.cnn_filtered.vcf"
+                shutil.copy2(raw_vcf, filtered_vcf)
+                n_cnn = recorder.start("nv_score_variants", {"vcf": str(raw_vcf), "ref": str(ref_fa), "skipped": True})
+                recorder.finish(n_cnn, outputs={"annotated_vcf": str(filtered_vcf)})
+                n_filter = recorder.start("filter_variant_tranches", {"vcf": str(filtered_vcf), "skipped": True})
+            else:
+                n_cnn = recorder.start("nv_score_variants", {"vcf": str(raw_vcf), "ref": str(ref_fa)})
+                
+                # Fix header issues with gatk HaplotypeCaller output for PySam compatibility in NVScoreVariants
+                if args.fix_vcf_header:
+                    print(f"[INFO] Fixing VCF header for PySam compatibility...")
+                    fixed_vcf = outdir / f"{sample}.variants.fixed.vcf"
+                    import subprocess as sp
+                    fix_script = outdir / "fix_vcf_header_safe.py"
+                    with open(fix_script, "w") as f:
+                        f.write("""import sys
+def fix_header(input_vcf, output_vcf):
+    print(f"Fixing VCF header for {input_vcf}")
+    with open(input_vcf, 'r') as f_in, open(output_vcf, 'w') as f_out:
+        header_lines = []
+        has_ac = False; has_af = False; has_an = False; has_dp = False; has_baseqranksum = False
+        has_excesshet = False; has_fs = False; has_inbreedingcoeff = False; has_mleac = False
+        has_mleaf = False; has_mq = False; has_mqranksum = False; has_qd = False
+        has_readposranksum = False; has_sor = False
+        has_gt = False; has_ad = False; has_dp_fmt = False; has_gq = False; has_pl = False
+        
+        for line in f_in:
+            if line.startswith('##'):
+                header_lines.append(line)
+                if line.startswith('##INFO=<ID=AC,'): has_ac = True
+                if line.startswith('##INFO=<ID=AF,'): has_af = True
+                if line.startswith('##INFO=<ID=AN,'): has_an = True
+                if line.startswith('##INFO=<ID=DP,'): has_dp = True
+                if line.startswith('##INFO=<ID=BaseQRankSum,'): has_baseqranksum = True
+                if line.startswith('##INFO=<ID=ExcessHet,'): has_excesshet = True
+                if line.startswith('##INFO=<ID=FS,'): has_fs = True
+                if line.startswith('##INFO=<ID=InbreedingCoeff,'): has_inbreedingcoeff = True
+                if line.startswith('##INFO=<ID=MLEAC,'): has_mleac = True
+                if line.startswith('##INFO=<ID=MLEAF,'): has_mleaf = True
+                if line.startswith('##INFO=<ID=MQ,'): has_mq = True
+                if line.startswith('##INFO=<ID=MQRankSum,'): has_mqranksum = True
+                if line.startswith('##INFO=<ID=QD,'): has_qd = True
+                if line.startswith('##INFO=<ID=ReadPosRankSum,'): has_readposranksum = True
+                if line.startswith('##INFO=<ID=SOR,'): has_sor = True
+                if line.startswith('##FORMAT=<ID=GT,'): has_gt = True
+                if line.startswith('##FORMAT=<ID=AD,'): has_ad = True
+                if line.startswith('##FORMAT=<ID=DP,'): has_dp_fmt = True
+                if line.startswith('##FORMAT=<ID=GQ,'): has_gq = True
+                if line.startswith('##FORMAT=<ID=PL,'): has_pl = True
+            elif line.startswith('#CHROM'):
+                for h_line in header_lines: f_out.write(h_line)
+                if not has_ac: f_out.write('##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count in genotypes">\\n')
+                if not has_af: f_out.write('##INFO=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">\\n')
+                if not has_an: f_out.write('##INFO=<ID=AN,Number=1,Type=Integer,Description="Total number of alleles">\\n')
+                if not has_dp: f_out.write('##INFO=<ID=DP,Number=1,Type=Integer,Description="Approximate read depth">\\n')
+                if not has_baseqranksum: f_out.write('##INFO=<ID=BaseQRankSum,Number=1,Type=Float,Description="Z-score from Wilcoxon rank sum test of Alt Vs. Ref base qualities">\\n')
+                if not has_excesshet: f_out.write('##INFO=<ID=ExcessHet,Number=1,Type=Float,Description="Phred-scaled p-value for exact test of excess heterozygosity">\\n')
+                if not has_fs: f_out.write('##INFO=<ID=FS,Number=1,Type=Float,Description="Phred-scaled p-value using Fisher exact test to detect strand bias">\\n')
+                if not has_inbreedingcoeff: f_out.write('##INFO=<ID=InbreedingCoeff,Number=1,Type=Float,Description="Inbreeding coefficient">\\n')
+                if not has_mleac: f_out.write('##INFO=<ID=MLEAC,Number=A,Type=Integer,Description="Maximum likelihood expectation (MLE) for the allele counts">\\n')
+                if not has_mleaf: f_out.write('##INFO=<ID=MLEAF,Number=A,Type=Float,Description="Maximum likelihood expectation (MLE) for the allele frequency">\\n')
+                if not has_mq: f_out.write('##INFO=<ID=MQ,Number=1,Type=Float,Description="RMS Mapping Quality">\\n')
+                if not has_mqranksum: f_out.write('##INFO=<ID=MQRankSum,Number=1,Type=Float,Description="Z-score From Wilcoxon rank sum test of Alt vs. Ref read mapping qualities">\\n')
+                if not has_qd: f_out.write('##INFO=<ID=QD,Number=1,Type=Float,Description="Variant Confidence/Quality by Depth">\\n')
+                if not has_readposranksum: f_out.write('##INFO=<ID=ReadPosRankSum,Number=1,Type=Float,Description="Z-score from Wilcoxon rank sum test of Alt vs. Ref read position bias">\\n')
+                if not has_sor: f_out.write('##INFO=<ID=SOR,Number=1,Type=Float,Description="Symmetric Odds Ratio of 2x2 contingency table to detect strand bias">\\n')
+                if not has_gt: f_out.write('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\\n')
+                if not has_ad: f_out.write('##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">\\n')
+                if not has_dp_fmt: f_out.write('##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Approximate read depth">\\n')
+                if not has_gq: f_out.write('##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype Quality">\\n')
+                if not has_pl: f_out.write('##FORMAT=<ID=PL,Number=G,Type=Integer,Description="Normalized, Phred-scaled likelihoods">\\n')
+                f_out.write(line)
+            else:
+                f_out.write(line)
+if __name__ == "__main__":
+    fix_header(sys.argv[1], sys.argv[2])
+""")
+                    sp.run(["python3", str(fix_script), str(raw_vcf), str(fixed_vcf)], check=True)
+                    raw_vcf = fixed_vcf
+
+                annotated_vcf = _run_nv_score_variants(gatk_bin, raw_vcf, ref_fa, sample, outdir, node=n_cnn)
+                recorder.finish(n_cnn, outputs={"annotated_vcf": str(annotated_vcf)})
+                
+                n_filter = recorder.start("filter_variant_tranches", {"vcf": str(annotated_vcf), "resource": str(cnn_resource_path)})
+                filtered_vcf = _filter_variant_tranches(gatk_bin, annotated_vcf, cnn_resource_path, sample, outdir, node=n_filter)
         else:
             n_filter = recorder.start("filter_variants_hard", {"vcf": str(raw_vcf)})
             filtered_vcf = _filter_variants_hard(gatk_bin, raw_vcf, sample, outdir, node=n_filter)
@@ -1324,7 +1376,7 @@ def main() -> int:
         )
 
         n_report = recorder.start("generate_markdown_report", {"report": str(report)})
-        filter_method = "GATK CNNScoreVariants + FilterVariantTranches" if args.run_cnn else "GATK VariantFiltration (hard-filter)"
+        filter_method = "GATK NVScoreVariants + FilterVariantTranches" if args.run_cnn else "GATK VariantFiltration (hard-filter)"
         _write_report(report, fastq1, fastq2, ref_fa, filtered_vcf, csv_file, prediction, dedup_bam, variants, filter_method)
         recorder.finish(n_report, outputs={"report": str(report)})
 

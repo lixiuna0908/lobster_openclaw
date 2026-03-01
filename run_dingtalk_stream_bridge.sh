@@ -1,24 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 钉钉桥接与生信流程统一使用 conda 环境 gatk（含 GATK/PyTorch/scorevariants 及 dingtalk-stream 等依赖）。
 ROOT="/Users/work/000code/github"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
-VENV_DIR="${ROOT}/.venv_dingtalk_bridge"
+CONDA_ENV="${DINGTALK_CONDA_ENV:-gatk}"
 
 cd "${ROOT}"
 
-if [[ ! -d "${VENV_DIR}" ]]; then
-  "${PYTHON_BIN}" -m venv "${VENV_DIR}"
-fi
-
-source "${VENV_DIR}/bin/activate"
-pip install --upgrade pip >/dev/null
-pip install -r "${ROOT}/requirements.txt"
-
-# Ensure conda base tools (e.g. gatk) are resolvable by downstream subprocesses.
+# 确保 conda 可用；GFORTRAN 避免 gatk 环境 activate 时 gfortran 脚本报 unbound variable
 if [[ -d "$HOME/miniconda3/bin" ]]; then
   export PATH="$HOME/miniconda3/bin:$PATH"
 fi
+export GFORTRAN="${GFORTRAN:-}"
+
+# 确保 gatk 环境下已安装钉钉桥接依赖
+conda run -n "${CONDA_ENV}" python3 -c 'import dingtalk_stream' 2>/dev/null || {
+  echo "[INFO] 在 conda 环境 ${CONDA_ENV} 中安装 requirements.txt..."
+  conda run -n "${CONDA_ENV}" pip install -q -r "${ROOT}/requirements.txt"
+}
 
 # 这里用硬编码替换成你当前机器人的凭证（刚才日志中暴露的或者钉钉后台最新的）
 export DINGTALK_STREAM_CLIENT_ID="dingnidkqchjoxh6rr4j"
@@ -35,5 +34,5 @@ if [[ -z "${DINGTALK_REPLY_WEBHOOK:-}" ]]; then
   echo "[WARN] DINGTALK_REPLY_WEBHOOK 未设置，将依赖消息中的 sessionWebhook 回包。"
 fi
 
-echo "[INFO] Starting DingTalk Stream bridge..."
-exec "${VENV_DIR}/bin/python" "${ROOT}/dingtalk_stream_bridge.py"
+echo "[INFO] Starting DingTalk Stream bridge (conda env: ${CONDA_ENV})..."
+exec conda run -n "${CONDA_ENV}" python3 "${ROOT}/dingtalk_stream_bridge.py"
