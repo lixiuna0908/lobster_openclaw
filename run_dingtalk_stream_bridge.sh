@@ -34,5 +34,5 @@ if [[ -z "${DINGTALK_REPLY_WEBHOOK:-}" ]]; then
   echo "[WARN] DINGTALK_REPLY_WEBHOOK 未设置，将依赖消息中的 sessionWebhook 回包。"
 fi
 
-echo "[INFO] Starting DingTalk Stream bridge (conda env: ${CONDA_ENV})..."
+echo "[INFO] Starting DingTalk Stream bridge [conda env: ${CONDA_ENV}]..."
 exec conda run -n "${CONDA_ENV}" python3 "${ROOT}/dingtalk_stream_bridge.py"

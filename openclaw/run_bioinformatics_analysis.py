@@ -11,7 +11,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TextIO
+from typing import Any, Callable, Dict, List, Optional, TextIO
 
 
 def _ensure_runtime_path() -> None:
@@ -81,6 +81,17 @@ class NodeRecorder:
         current_node = self.nodes[-1]
         current_node["progress"] = progress
         self.write(status)
+
+    def write_progress_bytes(self, progress_bytes: int, total_bytes: int) -> None:
+        """按已处理字节/总字节上报进度，供看板按「文件大小」估算百分比。"""
+        if not self.nodes or total_bytes <= 0:
+            return
+        current_node = self.nodes[-1]
+        current_node["total_bytes"] = total_bytes
+        current_node["progress_bytes"] = min(progress_bytes, total_bytes)
+        pct = min(99, int(100 * current_node["progress_bytes"] / total_bytes))
+        current_node["progress"] = pct
+        self.write("running")
 
     def record_command(self, node: Dict[str, Any], cmd: List[str], elapsed_ms: int) -> None:
         node["commands"].append({"cmd": cmd, "elapsed_ms": elapsed_ms})
@@ -305,13 +316,18 @@ def _open_text_maybe_gz(path: Path) -> TextIO:
     return path.open("r", encoding="utf-8", errors="replace")
 
 
-def _fastq_basic_stats(fastq_path: Path) -> Dict[str, Any]:
+def _fastq_basic_stats(
+    fastq_path: Path,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> Dict[str, Any]:
     reads = 0
     total_bases = 0
     n_bases = 0
     min_len = 0
     max_len = 0
     malformed_lines = 0
+    total_bytes_this_file = fastq_path.stat().st_size if fastq_path.exists() else 0
+    progress_interval = 50000  # 每 5 万条序列回调一次
 
     with _open_text_maybe_gz(fastq_path) as fh:
         for i, line in enumerate(fh):
@@ -321,6 +337,12 @@ def _fastq_basic_stats(fastq_path: Path) -> Dict[str, Any]:
             if not seq:
                 malformed_lines += 1
                 continue
+            if progress_callback and reads > 0 and reads % progress_interval == 0:
+                try:
+                    pos = fh.buffer.tell() if hasattr(fh, "buffer") else 0
+                except (OSError, AttributeError):
+                    pos = 0
+                progress_callback(min(pos, total_bytes_this_file), total_bytes_this_file)
             seq_len = len(seq)
             reads += 1
             total_bases += seq_len
@@ -331,6 +353,9 @@ def _fastq_basic_stats(fastq_path: Path) -> Dict[str, Any]:
             else:
                 min_len = min(min_len, seq_len)
                 max_len = max(max_len, seq_len)
+
+    if progress_callback and total_bytes_this_file > 0:
+        progress_callback(total_bytes_this_file, total_bytes_this_file)
 
     mean_len = (total_bases / reads) if reads else 0.0
     n_rate = (n_bases / total_bases) if total_bases else 0.0
@@ -353,11 +378,22 @@ def _run_raw_qc(
     *,
     qc_gate: bool,
     max_n_rate: float,
+    recorder: Optional[Any] = None,
+    node: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     qc_dir = outdir / "qc"
     qc_dir.mkdir(parents=True, exist_ok=True)
-    r1 = _fastq_basic_stats(fastq1)
-    r2 = _fastq_basic_stats(fastq2) if fastq2 else None
+    total_bytes = fastq1.stat().st_size + (fastq2.stat().st_size if fastq2 and fastq2.exists() else 0)
+    offset1 = 0
+    offset2 = fastq1.stat().st_size if fastq1.exists() else 0
+
+    def make_callback(offset: int) -> Optional[Callable[[int, int], None]]:
+        if recorder is None or total_bytes <= 0:
+            return None
+        return lambda pb_this, _total_this: recorder.write_progress_bytes(offset + pb_this, total_bytes)
+
+    r1 = _fastq_basic_stats(fastq1, progress_callback=make_callback(offset1))
+    r2 = _fastq_basic_stats(fastq2, progress_callback=make_callback(offset2)) if fastq2 else None
     total_bases = r1["total_bases"] + (r2["total_bases"] if r2 else 0)
     total_n_bases = r1["n_bases"] + (r2["n_bases"] if r2 else 0)
     merged_n_rate = (total_n_bases / total_bases) if total_bases else 0.0
@@ -1110,6 +1146,8 @@ def main() -> int:
             outdir,
             qc_gate=args.qc_gate,
             max_n_rate=args.max_n_rate,
+            recorder=recorder,
+            node=n_raw_qc,
         )
         recorder.finish(
             n_raw_qc,
