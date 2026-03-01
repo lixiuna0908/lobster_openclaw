@@ -36,13 +36,20 @@ DEFAULT_REPLY_WEBHOOK = os.getenv("DINGTALK_REPLY_WEBHOOK", "").strip()
 REPLY_SIGN_SECRET = os.getenv("DINGTALK_REPLY_SIGN_SECRET", "").strip()
 KEYWORDS = [
     kw.strip()
-    for kw in os.getenv("DINGTALK_KEYWORDS", "帮我运行,运行流程,开始处理,FASTQ,ref,重新运行").split(",")
+    for kw in os.getenv(
+        "DINGTALK_KEYWORDS",
+        "帮我运行,运行流程,开始处理,FASTQ,FASTQ1,FASTQ2,ref,重新运行",
+    ).split(",")
     if kw.strip()
 ]
-RUN_TIMEOUT_SEC = int(os.getenv("BIO_RUN_TIMEOUT_SEC", "3600"))
 # 某节点运行超过此时长后，每间隔此时长推送一次进度（秒）
 LONG_RUNNING_PUSH_INTERVAL_SEC = 600  # 10 分钟
+# 每半小时检查一次流程状态，有报错则推送到钉钉
+STATUS_CHECK_INTERVAL_SEC = 1800  # 30 分钟
 LOG_ALL_TOPICS = os.getenv("DINGTALK_STREAM_LOG_ALL_TOPICS", "1").strip() not in {"0", "false", "False"}
+
+STATUS_CHECK_WEBHOOK_FILE = RUNTIME_DIR / "status_check_webhook.txt"
+LAST_PUSHED_ERROR_FILE = RUNTIME_DIR / "last_pushed_error.txt"
 
 
 @dataclass
@@ -95,11 +102,13 @@ def _contains_keyword(text: str) -> bool:
 
 
 def _extract_paths(text: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    # 支持 = 、 := 、 ：、 全角＝；FASTQ1/FASTQ2 与 fastq/fastq1 均匹配（IGNORECASE）
+    _eq = r"\s*[:=：＝]\s*"
     patterns = {
-        "fastq": r"(?:fastq1?)\s*[:=：]\s*([^\s]+)",
-        "fastq2": r"(?:fastq2)\s*[:=：]\s*([^\s]+)",
-        "ref": r"(?:ref|reference|参考(?:基因组)?)\s*[:=：]\s*([^\s]+)",
-        "outdir": r"(?:outdir|output|输出目录)\s*[:=：]\s*([^\s]+)",
+        "fastq": rf"(?:fastq1?)\s*{_eq}([^\s]+)",
+        "fastq2": rf"(?:fastq2)\s*{_eq}([^\s]+)",
+        "ref": rf"(?:ref|reference|参考(?:基因组)?)\s*{_eq}([^\s]+)",
+        "outdir": rf"(?:outdir|output|输出目录)\s*{_eq}([^\s]+)",
     }
     fastq = None
     fastq2 = None
@@ -627,6 +636,78 @@ def _build_stage_status_text(
     return "\n".join(lines)
 
 
+def _check_pipeline_error_and_notify() -> None:
+    """检查生信流程是否有报错，若有则向钉钉推送一次（同一次错误不重复推送）。"""
+    try:
+        if not STATUS_CHECK_WEBHOOK_FILE.exists():
+            return
+        webhook = STATUS_CHECK_WEBHOOK_FILE.read_text(encoding="utf-8").strip()
+        if not webhook:
+            return
+    except Exception:
+        return
+
+    outdir_path = ROOT_DIR / "test_data" / "out_dingtalk"
+    records_file = outdir_path / "pipeline_node_records.json"
+    error_parts: List[str] = []
+    error_key: Optional[str] = None
+
+    # 1) 流程节点记录中的错误
+    records = _load_json(records_file) if records_file.exists() else None
+    if records:
+        if records.get("error"):
+            error_parts.append(f"流程记录错误: {records.get('error')}")
+        for node in records.get("nodes") or []:
+            if node.get("status") == "fail":
+                err = node.get("error") or ""
+                error_parts.append(f"节点失败: {node.get('name', '?')} — {err}")
+        if error_parts:
+            error_key = f"records:{outdir_path}:{records_file.stat().st_mtime if records_file.exists() else 0}"
+
+    # 2) 最近一次 result.json 中 ok=false（网关返回失败）
+    result_files = list(RUNTIME_DIR.glob("*_result.json"))
+    if result_files:
+        latest_result = max(result_files, key=lambda p: p.stat().st_mtime)
+        data = _load_json(latest_result)
+        if isinstance(data, dict) and data.get("ok") is False:
+            err_msg = (data.get("error") or {})
+            if isinstance(err_msg, dict):
+                err_msg = err_msg.get("message", err_msg)
+            error_parts.append(f"网关返回失败: {err_msg}")
+            if not error_key:
+                error_key = f"result:{latest_result}"
+
+    if not error_parts:
+        return
+
+    last_pushed = ""
+    if LAST_PUSHED_ERROR_FILE.exists():
+        try:
+            last_pushed = LAST_PUSHED_ERROR_FILE.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+    if error_key and error_key == last_pushed:
+        return
+
+    msg = "【生信流程状态检查】检测到报错：\n\n" + "\n\n".join(error_parts)
+    _send_dingtalk_text(webhook, msg)
+    try:
+        if error_key:
+            LAST_PUSHED_ERROR_FILE.write_text(error_key, encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _status_check_loop() -> None:
+    """后台循环：每 STATUS_CHECK_INTERVAL_SEC 秒执行一次流程状态检查。"""
+    while True:
+        time.sleep(STATUS_CHECK_INTERVAL_SEC)
+        try:
+            _check_pipeline_error_and_notify()
+        except Exception as exc:
+            print(f"[WARN] status check failed: {exc}", flush=True)
+
+
 def _dump_incoming_payload(raw: Any, payload: Dict[str, Any]) -> None:
     ts = time.strftime("%Y%m%d_%H%M%S")
     millis = int((time.time() % 1) * 1000)
@@ -662,6 +743,12 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
     payload_path = RUNTIME_DIR / f"{session_key}_{ts}_payload.json"
     result_path = RUNTIME_DIR / f"{session_key}_{ts}_result.json"
     outdir = state.outdir or str(ROOT_DIR / "test_data" / "out_dingtalk")
+
+    # 供每半小时状态检查使用：用当前会话的 webhook 推送报错
+    try:
+        STATUS_CHECK_WEBHOOK_FILE.write_text(webhook, encoding="utf-8")
+    except Exception:
+        pass
 
     env = os.environ.copy()
     env["FASTQ_PATH"] = state.fastq or ""
@@ -792,9 +879,6 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
                 
                 if rc is not None:
                     break
-                if time.time() - start_ts > RUN_TIMEOUT_SEC:
-                    proc.kill()
-                    raise subprocess.TimeoutExpired(cmd, RUN_TIMEOUT_SEC)
                 time.sleep(3)
 
         rc = proc.returncode if proc.returncode is not None else -1
@@ -834,17 +918,26 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
             err_line = f"网关错误: {gateway_err}\n" if gateway_err else ""
             failed_panel = _build_node_board_text(outdir_path, start_ts)
             _send_dingtalk_text(webhook, f"{failed_panel}\n\n流程失败（exit={rc}）。\n{err_line}{err}\n结果文件: {result_path}")
-    except subprocess.TimeoutExpired:
-        _send_dingtalk_text(webhook, f"流程超时（>{RUN_TIMEOUT_SEC}s）。")
     except Exception as exc:
         _send_dingtalk_text(webhook, f"流程异常：{exc}")
 
 
 def _handle_message(payload: Dict[str, Any]) -> None:
     text = _normalize_text(payload)
+    webhook = str(payload.get("sessionWebhook") or payload.get("conversationWebhook") or DEFAULT_REPLY_WEBHOOK).strip()
+
     if not text:
+        print("[DEBUG] 忽略消息：未解析到文本内容", flush=True)
+        if webhook:
+            _send_dingtalk_text(webhook, "未识别到文本内容，请确认已 @ 机器人并发送文字。")
         return
     if not _contains_keyword(text):
+        print(f"[DEBUG] 忽略消息：未包含关键词，text={text[:80]!r}", flush=True)
+        if webhook:
+            _send_dingtalk_text(
+                webhook,
+                "收到。如需运行生信流程，请发送包含「帮我运行」或「FASTQ」「ref」等关键词的指令。",
+            )
         return
 
     session_key = _safe_session_key(payload)
@@ -950,6 +1043,9 @@ def main() -> int:
     if not DEFAULT_REPLY_WEBHOOK:
         print("[WARN] DINGTALK_REPLY_WEBHOOK 未设置，将依赖消息中的 sessionWebhook 回复。")
     print("[INFO] DingTalk Stream bridge starting...")
+    # 每半小时检查流程状态，有报错则推送到钉钉
+    status_check_thread = threading.Thread(target=_status_check_loop, daemon=True)
+    status_check_thread.start()
     credential = dingtalk_stream.Credential(CLIENT_ID, CLIENT_SECRET)
     client = DebugDingTalkStreamClient(credential)
     client.register_callback_handler(dingtalk_stream.chatbot.ChatbotMessage.TOPIC, BioChatbotHandler())

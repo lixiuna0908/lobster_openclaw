@@ -11,6 +11,7 @@ cd "${ROOT}"
 if [[ -d "$HOME/miniconda3/bin" ]]; then
   export PATH="$HOME/miniconda3/bin:$PATH"
 fi
+# 避免 gatk 环境 activate.d 里 set -u 报 GFORTRAN unbound
 export GFORTRAN="${GFORTRAN:-}"
 
 # 确保 gatk 环境下已安装钉钉桥接依赖
@@ -35,4 +36,4 @@ if [[ -z "${DINGTALK_REPLY_WEBHOOK:-}" ]]; then
 fi
 
 echo "[INFO] Starting DingTalk Stream bridge [conda env: ${CONDA_ENV}]..."
-exec conda run -n "${CONDA_ENV}" python3 "${ROOT}/dingtalk_stream_bridge.py"
+exec env GFORTRAN="${GFORTRAN}" conda run -n "${CONDA_ENV}" python3 "${ROOT}/dingtalk_stream_bridge.py"
