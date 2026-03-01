@@ -1,7 +1,16 @@
 chen/
 .venv/
 **/.venv/
+.venv_dingtalk_bridge
 .DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+
+# 钉钉桥接运行时与日志
+dingtalk_bridge.log
 
 refer_hg/hg38/hg38.fa
 test_data/out_dingtalk/ref/
@@ -11,7 +20,6 @@ git-hooks
 dingtalk_runtime
 openclaw/git-hooks
 test_data
-.venv_dingtalk_bridge
 openclaw/.pi
 openclaw/.vscode
 
