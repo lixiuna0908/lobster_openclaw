@@ -1047,6 +1047,9 @@ def main() -> int:
         sample_id=args.sample_id,
         outdir=outdir,
     )
+    # 被 lobster/网关调用时只从 stdout 取最后一行 JSON；其余日志打到 stderr，避免超 maxStdoutBytes 或解析失败
+    _real_stdout = sys.stdout
+    sys.stdout = sys.stderr
 
     try:
         n_tools = recorder.start("tool_check", {"tools": ["bwa", "samtools", "gatk", "fastp", "bcftools"]})
@@ -1385,36 +1388,35 @@ if __name__ == "__main__":
         recorder.finish(n_cleanup, outputs={"sam_removed": str(sam)})
 
         records_path = recorder.write("ok")
-        print(
-            json.dumps(
-                {
-                    "ok": True,
-                    "vcf": str(filtered_vcf),
-                    "raw_vcf": str(raw_vcf),
-                    "csv": str(csv_file),
-                    "report": str(report),
-                    "prediction_json": str(prediction_json),
-                    "bam": str(dedup_bam),
-                    "reference": str(ref_fa),
-                    "variants": variants,
-                    "node_records": str(records_path),
-                },
-                ensure_ascii=False,
-            )
-        )
+        envelope = {
+            "ok": True,
+            "status": "ok",
+            "output": [
+                {"vcf": str(filtered_vcf)},
+                {"raw_vcf": str(raw_vcf)},
+                {"csv": str(csv_file)},
+                {"report": str(report)},
+                {"prediction_json": str(prediction_json)},
+                {"bam": str(dedup_bam)},
+                {"reference": str(ref_fa)},
+                {"variants": variants},
+                {"node_records": str(records_path)},
+            ],
+        }
+        sys.stdout = _real_stdout
+        sys.stdout.write(json.dumps(envelope, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
         return 0
     except Exception as e:
         records_path = recorder.write("failed", error=str(e))
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "error": str(e),
-                    "node_records": str(records_path),
-                },
-                ensure_ascii=False,
-            )
-        )
+        envelope = {
+            "ok": False,
+            "error": {"type": "pipeline_error", "message": str(e)},
+            "node_records": str(records_path),
+        }
+        sys.stdout = _real_stdout
+        sys.stdout.write(json.dumps(envelope, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
         raise
     return 0
 

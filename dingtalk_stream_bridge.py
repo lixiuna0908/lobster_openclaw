@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -184,14 +185,23 @@ def _load_json(path: Path) -> Dict[str, Any]:
 
 
 def _fmt_duration(seconds: float) -> str:
-    sec = max(0, int(seconds))
-    hours, rem = divmod(sec, 3600)
-    minutes, s = divmod(rem, 60)
-    if hours > 0:
-        return f"{hours}小时{minutes}分{s}秒"
-    if minutes > 0:
-        return f"{minutes}分{s}秒"
-    return f"{s}秒"
+    """格式化耗时为「时/分/秒」或「秒/毫秒」，精确到毫秒。"""
+    total = max(0.0, float(seconds))
+    if total >= 3600:
+        hours = int(total // 3600)
+        rem = total % 3600
+        minutes = int(rem // 60)
+        s = rem % 60
+        return f"{hours}小时{minutes}分{s:.3f}秒"
+    if total >= 60:
+        minutes = int(total // 60)
+        s = total % 60
+        return f"{minutes}分{s:.3f}秒"
+    if total >= 1:
+        return f"{total:.3f}秒"
+    if total > 0:
+        return f"{total * 1000:.1f}毫秒"
+    return "0毫秒"
 
 
 STAGE_LABELS: Dict[int, str] = {
@@ -239,6 +249,24 @@ NODE_TO_STAGE: Dict[str, int] = {
 }
 
 
+def _node_duration_seconds(node: Dict[str, Any]) -> float:
+    """优先用 started_at 与 finished_at 计算实际耗时（秒），否则用 duration_ms。"""
+    started = node.get("started_at")
+    finished = node.get("finished_at")
+    if started and finished:
+        try:
+            t0 = datetime.fromisoformat(started.replace("Z", "+00:00"))
+            t1 = datetime.fromisoformat(finished.replace("Z", "+00:00"))
+            if t0.tzinfo is None:
+                t0 = t0.replace(tzinfo=timezone.utc)
+            if t1.tzinfo is None:
+                t1 = t1.replace(tzinfo=timezone.utc)
+            return max(0.0, (t1 - t0).total_seconds())
+        except (ValueError, TypeError):
+            pass
+    return node.get("duration_ms", 0) / 1000.0
+
+
 def _load_stage_progress(outdir_path: Path, stage2_progress: int) -> Tuple[Dict[int, int], Dict[int, float]]:
     progress: Dict[int, int] = {k: 0 for k in range(2, 11)}
     durations: Dict[int, float] = {k: 0.0 for k in range(2, 11)}
@@ -248,7 +276,7 @@ def _load_stage_progress(outdir_path: Path, stage2_progress: int) -> Tuple[Dict[
     if not isinstance(nodes, list):
         return progress, durations
     
-    # 记录已完成或正在运行的 stage
+    # 记录已完成或正在运行的 stage；实际耗时由 started_at ~ finished_at 计算
     active_stages = set()
     for node in nodes:
         if not isinstance(node, dict):
@@ -258,7 +286,7 @@ def _load_stage_progress(outdir_path: Path, stage2_progress: int) -> Tuple[Dict[
             continue
         
         status = str(node.get("status") or "")
-        durations[stage] += node.get("duration_ms", 0) / 1000.0
+        durations[stage] += _node_duration_seconds(node)
         
         if status == "ok":
             progress[stage] = 100
@@ -287,7 +315,7 @@ def _build_stage_status_text(
 ) -> str:
     now = time.time()
     total_elapsed = _fmt_duration(now - total_started_at)
-    lines = ["流程进度看板："]
+    lines = [f"流程进度看板（总耗时：{total_elapsed}）："]
     for stage in range(2, 11):
         pct = 100 if finished_ok else max(0, min(100, int(stage_progress.get(stage, 0))))
         label = STAGE_LABELS[stage]
@@ -322,6 +350,14 @@ def _dump_incoming_payload(raw: Any, payload: Dict[str, Any]) -> None:
             encoding="utf-8",
         )
         print(f"[DEBUG] payload dumped: {dump_path}", flush=True)
+        # 便于排查“钉钉发了但没推送”：每次收到消息写一行，可查最后收到时间
+        try:
+            (RUNTIME_DIR / "last_message_received.log").write_text(
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} incoming={dump_path.name}\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
     except Exception as exc:
         print(f"[WARN] payload dump failed: {exc}", flush=True)
 
@@ -477,6 +513,17 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
             _send_dingtalk_text(webhook, f"{final_panel}\n\n{content}")
         else:
             err = (proc_stderr or proc_stdout or "").strip()[-1200:]
+            gateway_err = ""
+            try:
+                if result_path.exists():
+                    res = _load_json(result_path)
+                    if isinstance(res, dict) and res.get("ok") is False:
+                        e = res.get("error")
+                        if isinstance(e, dict) and isinstance(e.get("message"), str):
+                            gateway_err = e["message"].strip()
+            except Exception:
+                pass
+            err_line = f"网关错误: {gateway_err}\n" if gateway_err else ""
             last_progress = int(_load_json(progress_file).get("progress") or 0)
             failed_progress, failed_durations = _load_stage_progress(outdir_path, last_progress)
             failed_panel = _build_stage_status_text(
@@ -486,7 +533,7 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
                 running=False,
                 finished_ok=False,
             )
-            _send_dingtalk_text(webhook, f"{failed_panel}\n\n流程失败（exit={rc}）。\n{err}\n结果文件: {result_path}")
+            _send_dingtalk_text(webhook, f"{failed_panel}\n\n流程失败（exit={rc}）。\n{err_line}{err}\n结果文件: {result_path}")
     except subprocess.TimeoutExpired:
         _send_dingtalk_text(webhook, f"流程超时（>{RUN_TIMEOUT_SEC}s）。")
     except Exception as exc:

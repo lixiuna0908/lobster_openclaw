@@ -327,10 +327,11 @@ export async function handleToolsInvokeHttpRequest(
       });
       return true;
     }
+    const message = getErrorMessage(err) || "tool execution failed";
     logWarn(`tools-invoke: tool execution failed: ${String(err)}`);
     sendJson(res, 500, {
       ok: false,
-      error: { type: "tool_error", message: "tool execution failed" },
+      error: { type: "tool_error", message },
     });
   }
 

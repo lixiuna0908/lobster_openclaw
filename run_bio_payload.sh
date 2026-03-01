@@ -82,13 +82,15 @@ schema = {
     "additionalProperties": False,
 }
 
+# 网关侧 lobster 子进程继承网关环境，可能未设置 GFORTRAN，导致 gatk 环境 activate 报 unbound variable；在命令前注入 export 可避免。
+_env_prefix = "export GFORTRAN=\"${GFORTRAN:-}\"; "
 if use_llm_task:
     llm_args = {
         "prompt": "你是生信流程验收器。只输出符合 schema 的 JSON。检查：1) VCF 头必须有 ##reference=；2) 输出文件路径存在；3) 关键统计字段齐全。",
         "input": {"note": "请基于上一阶段输出进行结构化验收"},
         "schema": schema,
     }
-    base_cmd = f"conda run -n gatk python3 /Users/work/000code/github/openclaw/run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path} --known-sites {known_sites_path}"
+    base_cmd = _env_prefix + f"conda run -n gatk python3 /Users/work/000code/github/openclaw/run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path} --known-sites {known_sites_path}"
     if fastq2_path:
         base_cmd += f" --fastq2 {fastq2_path}"
     if run_bqsr:
@@ -105,7 +107,7 @@ if use_llm_task:
     )
 else:
     # Stable mode: avoid llm-task schema variability.
-    base_cmd = f"conda run -n gatk python3 /Users/work/000code/github/openclaw/run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path} --known-sites {known_sites_path}"
+    base_cmd = _env_prefix + f"conda run -n gatk python3 /Users/work/000code/github/openclaw/run_bioinformatics_analysis.py --fastq {fastq_path} --ref {ref_path} --outdir {outdir_path} --known-sites {known_sites_path}"
     if fastq2_path:
         base_cmd += f" --fastq2 {fastq2_path}"
     if run_bqsr:

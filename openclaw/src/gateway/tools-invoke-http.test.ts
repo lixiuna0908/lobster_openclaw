@@ -544,6 +544,6 @@ describe("POST /tools/invoke", () => {
     const crashBody = await crashRes.json();
     expect(crashBody.ok).toBe(false);
     expect(crashBody.error?.type).toBe("tool_error");
-    expect(crashBody.error?.message).toBe("tool execution failed");
+    expect(crashBody.error?.message).toBe("boom");
   });
 });
