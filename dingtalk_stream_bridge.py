@@ -55,6 +55,7 @@ class SessionState:
     outdir: Optional[str] = None
     last_text: Optional[str] = None
     updated_at: float = field(default_factory=time.time)
+    chat_info: Dict[str, Any] = field(default_factory=dict)
 
 
 SESSIONS: Dict[str, SessionState] = {}
@@ -130,6 +131,23 @@ def _should_run(text: str) -> bool:
     return any(w.lower() in lower for w in run_words)
 
 
+_access_token = None
+_access_token_expires_at = 0
+
+def _get_access_token() -> str:
+    global _access_token, _access_token_expires_at
+    now = time.time()
+    if _access_token and now < _access_token_expires_at:
+        return _access_token
+
+    url = f"https://oapi.dingtalk.com/gettoken?appkey={CLIENT_ID}&appsecret={CLIENT_SECRET}"
+    resp = requests.get(url, timeout=10).json()
+    if resp.get("errcode") == 0:
+        _access_token = resp.get("access_token")
+        _access_token_expires_at = now + resp.get("expires_in", 7200) - 60
+        return _access_token
+    raise RuntimeError(f"Failed to get access token: {resp}")
+
 def _log_send_attempt(webhook: str, outcome: str, detail: str = "") -> None:
     """记录每次发送尝试，便于排查无回复。"""
     try:
@@ -142,45 +160,83 @@ def _log_send_attempt(webhook: str, outcome: str, detail: str = "") -> None:
         pass
 
 
-def _send_dingtalk_text(webhook: str, content: str) -> None:
-    if not webhook:
-        print("[WARN] 钉钉推送跳过：webhook 为空", flush=True)
-        _log_send_attempt("", "skip_empty_webhook")
-        return
+def _send_dingtalk_text(chat_info: Dict[str, Any], content: str) -> None:
+    webhook = chat_info.get("webhook", "")
+    conversation_type = chat_info.get("conversationType")
+    conversation_id = chat_info.get("conversationId")
+    staff_id = chat_info.get("senderStaffId")
+
     _log_send_attempt(webhook, "start")
     try:
-        target_webhook = _build_signed_webhook(webhook)
-        if "<font" in content or "##" in content:
-            # Auto-detect markdown
+        token = _get_access_token()
+        is_markdown = "<font" in content or "##" in content
+        msg_key = "sampleMarkdown" if is_markdown else "sampleText"
+        msg_param = {"title": "生信流程通知", "text": content.replace("\n", " \n\n")} if is_markdown else {"content": content}
+
+        if conversation_type == "1" and staff_id:
+            # 1v1 chat
+            url = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"
             payload = {
-                "msgtype": "markdown",
-                "markdown": {
-                    "title": "生信流程通知",
-                    "text": content.replace("\n", " \n\n")
-                }
+                "robotCode": CLIENT_ID,
+                "userIds": [staff_id],
+                "msgKey": msg_key,
+                "msgParam": json.dumps(msg_param)
+            }
+        elif conversation_type == "2" and conversation_id:
+            # Group chat
+            url = "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+            payload = {
+                "robotCode": CLIENT_ID,
+                "openConversationId": conversation_id,
+                "msgKey": msg_key,
+                "msgParam": json.dumps(msg_param)
             }
         else:
-            payload = {
-                "msgtype": "text",
-                "text": {"content": content}
-            }
-        resp = requests.post(
-            target_webhook,
-            json=payload,
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            print(f"[WARN] 钉钉推送 HTTP {resp.status_code}: {resp.text[:200]}", flush=True)
-            _log_send_attempt(webhook, "http_error", f"status={resp.status_code} body={resp.text[:200]!r}")
+            # Fallback to webhook if OpenAPI params are missing
+            if not webhook:
+                print("[WARN] 钉钉推送跳过：无 webhook 且缺少 OpenAPI 参数", flush=True)
+                _log_send_attempt("", "skip_empty_webhook")
+                return
+            target_webhook = _build_signed_webhook(webhook)
+            if is_markdown:
+                payload = {
+                    "msgtype": "markdown",
+                    "markdown": {
+                        "title": "生信流程通知",
+                        "text": content.replace("\n", " \n\n")
+                    }
+                }
+            else:
+                payload = {
+                    "msgtype": "text",
+                    "text": {"content": content}
+                }
+            resp = requests.post(target_webhook, json=payload, timeout=10)
+            if resp.status_code != 200:
+                print(f"[WARN] 钉钉推送 webhook HTTP {resp.status_code}: {resp.text[:200]}", flush=True)
+                _log_send_attempt(webhook, "http_error", f"status={resp.status_code} body={resp.text[:200]!r}")
+            else:
+                _log_send_attempt(webhook, "ok")
+            return
+
+        # Send via OpenAPI
+        headers = {
+            "x-acs-dingtalk-access-token": token,
+            "Content-Type": "application/json"
+        }
+        resp = requests.post(url, headers=headers, json=payload, timeout=10)
+        if resp.status_code != 200 or resp.json().get("code"):
+            print(f"[WARN] 钉钉 OpenAPI 推送失败: {resp.text[:200]}", flush=True)
+            _log_send_attempt(webhook, "openapi_error", f"status={resp.status_code} body={resp.text[:200]!r}")
             try:
                 (RUNTIME_DIR / "dingtalk_reply_fail.log").write_text(
-                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} HTTP {resp.status_code}\n{resp.text[:500]}\n",
+                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} OpenAPI Error HTTP {resp.status_code}\n{resp.text[:500]}\n",
                     encoding="utf-8",
                 )
             except Exception:
                 pass
         else:
-            _log_send_attempt(webhook, "ok")
+            _log_send_attempt(webhook, "ok_openapi")
     except Exception as e:
         print(f"[WARN] 钉钉推送失败: {e}", flush=True)
         _log_send_attempt(webhook, "exception", str(e)[:100])
@@ -694,11 +750,12 @@ def _dump_incoming_payload(raw: Any, payload: Dict[str, Any]) -> None:
         print(f"[WARN] payload dump failed: {exc}", flush=True)
 
 
-def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> None:
+def _run_pipeline_async(session_key: str, state: SessionState) -> None:
     ts = time.strftime("%Y%m%d_%H%M%S")
     payload_path = RUNTIME_DIR / f"{session_key}_{ts}_payload.json"
     result_path = RUNTIME_DIR / f"{session_key}_{ts}_result.json"
     outdir = state.outdir or str(ROOT_DIR / "test_data" / "out_dingtalk")
+    chat_info = state.chat_info
 
     env = os.environ.copy()
     env["FASTQ_PATH"] = state.fastq or ""
@@ -726,7 +783,7 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
         f"OUTDIR: {env['OUTDIR_PATH']}\n\n"
         + _build_node_board_text(outdir_path, time.time())
     )
-    _send_dingtalk_text(webhook, start_msg)
+    _send_dingtalk_text(chat_info, start_msg)
 
     try:
         stdout_file = RUNTIME_DIR / f"{session_key}_{ts}_stdout.log"
@@ -815,7 +872,7 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
                     # 避免在完全没有开始时推送空状态
                     if not (stage_progress.get(2, 0) == 0 and sum(stage_progress.values()) == 0):
                         panel = _build_node_board_text(outdir_path, start_ts)
-                        _send_dingtalk_text(webhook, panel)
+                        _send_dingtalk_text(chat_info, panel)
                         last_reported_stages_hash = other_stages_hash
                         if bwa_prog >= last_sent_prog + 5:
                             last_sent_prog = (bwa_prog // 5) * 5
@@ -859,7 +916,7 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
                 f"结果文件: {result_path}"
             )
             final_panel = _build_node_board_text(outdir_path, start_ts)
-            _send_dingtalk_text(webhook, f"{final_panel}\n\n{content}")
+            _send_dingtalk_text(chat_info, f"{final_panel}\n\n{content}")
         else:
             err = (proc_stderr or proc_stdout or "").strip()[-1200:]
             gateway_err = ""
@@ -874,9 +931,9 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
                 pass
             err_line = f"网关错误: {gateway_err}\n" if gateway_err else ""
             failed_panel = _build_node_board_text(outdir_path, start_ts)
-            _send_dingtalk_text(webhook, f"{failed_panel}\n\n流程失败（exit={rc}）。\n{err_line}{err}\n结果文件: {result_path}")
+            _send_dingtalk_text(chat_info, f"{failed_panel}\n\n流程失败（exit={rc}）。\n{err_line}{err}\n结果文件: {result_path}")
     except Exception as exc:
-        _send_dingtalk_text(webhook, f"流程异常：{exc}")
+        _send_dingtalk_text(chat_info, f"流程异常：{exc}")
 
 
 def _handle_message(payload: Dict[str, Any]) -> None:
@@ -892,24 +949,36 @@ def _handle_message(payload: Dict[str, Any]) -> None:
         except Exception:
             pass
         webhook = str(payload.get("sessionWebhook") or payload.get("conversationWebhook") or DEFAULT_REPLY_WEBHOOK).strip()
-        if webhook:
-            _send_dingtalk_text(webhook, f"处理消息时发生异常，请稍后重试。{e}")
+        chat_info = {
+            "webhook": webhook,
+            "conversationType": payload.get("conversationType"),
+            "conversationId": payload.get("conversationId"),
+            "senderStaffId": payload.get("senderStaffId"),
+        }
+        _send_dingtalk_text(chat_info, f"处理消息时发生异常，请稍后重试。{e}")
 
 
 def _handle_message_impl(payload: Dict[str, Any]) -> None:
     text = _normalize_text(payload)
     webhook = str(payload.get("sessionWebhook") or payload.get("conversationWebhook") or DEFAULT_REPLY_WEBHOOK).strip()
+    
+    chat_info = {
+        "webhook": webhook,
+        "conversationType": payload.get("conversationType"),
+        "conversationId": payload.get("conversationId"),
+        "senderStaffId": payload.get("senderStaffId"),
+    }
 
     if not text:
         print("[DEBUG] 忽略消息：未解析到文本内容", flush=True)
-        if webhook:
-            _send_dingtalk_text(webhook, "未识别到文本内容，请确认已 @ 机器人并发送文字。")
+        if webhook or chat_info.get("conversationId"):
+            _send_dingtalk_text(chat_info, "未识别到文本内容，请确认已 @ 机器人并发送文字。")
         return
     if not _contains_keyword(text):
         print(f"[DEBUG] 忽略消息：未包含关键词，text={text[:80]!r}", flush=True)
-        if webhook:
+        if webhook or chat_info.get("conversationId"):
             _send_dingtalk_text(
-                webhook,
+                chat_info,
                 "收到。如需运行生信流程，请发送包含「帮我运行」或「FASTQ」「ref」等关键词的指令。",
             )
         return
@@ -918,6 +987,7 @@ def _handle_message_impl(payload: Dict[str, Any]) -> None:
     state = SESSIONS.get(session_key) or SessionState()
     state.last_text = text
     state.updated_at = time.time()
+    state.chat_info = chat_info
 
     fastq, fastq2, ref, outdir = _extract_paths(text)
     if fastq:
@@ -930,8 +1000,6 @@ def _handle_message_impl(payload: Dict[str, Any]) -> None:
         state.outdir = outdir
     SESSIONS[session_key] = state
 
-    webhook = str(payload.get("sessionWebhook") or payload.get("conversationWebhook") or DEFAULT_REPLY_WEBHOOK).strip()
-
     if not _should_run(text):
         msg = (
             "参数已记录。\n"
@@ -941,28 +1009,28 @@ def _handle_message_impl(payload: Dict[str, Any]) -> None:
             f"OUTDIR: {state.outdir or str(ROOT_DIR / 'test_data' / 'out_dingtalk')}\n"
             "发送“帮我运行”即可开始。"
         )
-        _send_dingtalk_text(webhook, msg)
+        _send_dingtalk_text(chat_info, msg)
         return
 
     if not state.fastq or not state.ref:
-        _send_dingtalk_text(webhook, "缺少参数。请先发送 fastq=... 和 ref=...，再发送“帮我运行”。")
+        _send_dingtalk_text(chat_info, "缺少参数。请先发送 fastq=... 和 ref=...，再发送“帮我运行”。")
         return
     if not Path(state.fastq).exists():
-        _send_dingtalk_text(webhook, f"FASTQ 路径不存在：{state.fastq}")
+        _send_dingtalk_text(chat_info, f"FASTQ 路径不存在：{state.fastq}")
         return
     if state.fastq2 and not Path(state.fastq2).exists():
-        _send_dingtalk_text(webhook, f"FASTQ2 路径不存在：{state.fastq2}")
+        _send_dingtalk_text(chat_info, f"FASTQ2 路径不存在：{state.fastq2}")
         return
     if not Path(state.ref).exists():
-        _send_dingtalk_text(webhook, f"参考基因组路径不存在：{state.ref}")
+        _send_dingtalk_text(chat_info, f"参考基因组路径不存在：{state.ref}")
         return
     if not RUN_SCRIPT.exists():
-        _send_dingtalk_text(webhook, f"执行脚本不存在：{RUN_SCRIPT}")
+        _send_dingtalk_text(chat_info, f"执行脚本不存在：{RUN_SCRIPT}")
         return
 
-    thread = threading.Thread(target=_run_pipeline_async, args=(session_key, webhook, state), daemon=True)
+    thread = threading.Thread(target=_run_pipeline_async, args=(session_key, state), daemon=True)
     thread.start()
-    _send_dingtalk_text(webhook, "已接收运行请求，任务开始执行。稍后会回传结果。")
+    _send_dingtalk_text(chat_info, "已接收运行请求，任务开始执行。稍后会回传结果。")
 
 
 class BioChatbotHandler(dingtalk_stream.ChatbotHandler):
@@ -997,7 +1065,13 @@ class BioChatbotHandler(dingtalk_stream.ChatbotHandler):
             _handle_message(payload)
         except Exception as exc:
             webhook = str(payload.get("sessionWebhook") or payload.get("conversationWebhook") or DEFAULT_REPLY_WEBHOOK).strip()
-            _send_dingtalk_text(webhook, f"Stream 处理异常：{exc}")
+            chat_info = {
+                "webhook": webhook,
+                "conversationType": payload.get("conversationType"),
+                "conversationId": payload.get("conversationId"),
+                "senderStaffId": payload.get("senderStaffId"),
+            }
+            _send_dingtalk_text(chat_info, f"Stream 处理异常：{exc}")
         return AckMessage.STATUS_OK, "OK"
 
 
