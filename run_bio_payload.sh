@@ -15,8 +15,7 @@ KNOWN_SITES_PATH="${KNOWN_SITES_PATH:-${ROOT_DIR}/dbsnp/dbsnp_hg38.vcf.gz}"
 RUN_BQSR="${RUN_BQSR:-0}"
 RUN_CNN="${RUN_CNN:-1}"
 USE_LLM_TASK="${USE_LLM_TASK:-0}"
-# Lobster 工具超时：默认不设整体超时（约 24.8 天），仅靠每半小时检查报错并杀进程。
-BIO_TOOL_TIMEOUT_MS="${BIO_TOOL_TIMEOUT_MS:-2147483647}"
+# Lobster 工具超时已被移除，完全依赖网关或底层脚本自身控制。
 
 # Ensure conda base tools (e.g. gatk) are resolvable.
 if [[ -d "$HOME/miniconda3/bin" ]]; then
@@ -40,15 +39,14 @@ if [[ -z "${TOKEN}" ]]; then
   exit 1
 fi
 
-python3 - <<'PY' "$PAYLOAD_FILE" "$TOKEN" "$FASTQ_PATH" "$FASTQ2_PATH" "$REF_PATH" "$OUTDIR_PATH" "$KNOWN_SITES_PATH" "$RUN_BQSR" "$RUN_CNN" "$USE_LLM_TASK" "$BIO_TOOL_TIMEOUT_MS"
+python3 - <<'PY' "$PAYLOAD_FILE" "$TOKEN" "$FASTQ_PATH" "$FASTQ2_PATH" "$REF_PATH" "$OUTDIR_PATH" "$KNOWN_SITES_PATH" "$RUN_BQSR" "$RUN_CNN" "$USE_LLM_TASK"
 import json
 import sys
 
-payload_file, token, fastq_path, fastq2_path, ref_path, outdir_path, known_sites_path, run_bqsr_str, run_cnn_str, use_llm_task_str, timeout_ms_str = sys.argv[1:12]
+payload_file, token, fastq_path, fastq2_path, ref_path, outdir_path, known_sites_path, run_bqsr_str, run_cnn_str, use_llm_task_str = sys.argv[1:11]
 use_llm_task = use_llm_task_str == "1"
 run_bqsr = run_bqsr_str == "1"
 run_cnn = run_cnn_str == "1"
-timeout_ms = int(timeout_ms_str)
 
 schema = {
     "type": "object",
@@ -125,7 +123,7 @@ payload = {
     "args": {
         "action": "run",
         "cwd": ".",
-        "timeoutMs": timeout_ms,
+        "timeoutMs": 2147483647,  # 极大值，避免触发网关默认的 1 分钟超时
         "maxStdoutBytes": 1048576,
         "pipeline": pipeline,
     },
@@ -136,7 +134,6 @@ with open(payload_file, "w", encoding="utf-8") as f:
 
 print(f"[INFO] payload generated: {payload_file}")
 print(f"[INFO] mode: {'llm-task-validation' if use_llm_task else 'stable'}")
-print(f"[INFO] timeoutMs: {timeout_ms}")
 PY
 
 echo "[INFO] invoking generated payload..."
