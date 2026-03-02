@@ -5,7 +5,6 @@ import hmac
 import json
 import os
 import re
-import signal
 import subprocess
 import threading
 import time
@@ -45,14 +44,7 @@ KEYWORDS = [
 ]
 # 某节点运行超过此时长后，每间隔此时长推送一次进度（秒）
 LONG_RUNNING_PUSH_INTERVAL_SEC = 600  # 10 分钟
-# 每半小时检查一次流程状态，有报错则推送到钉钉
-STATUS_CHECK_INTERVAL_SEC = 1800  # 30 分钟
 LOG_ALL_TOPICS = os.getenv("DINGTALK_STREAM_LOG_ALL_TOPICS", "1").strip() not in {"0", "false", "False"}
-
-STATUS_CHECK_WEBHOOK_FILE = RUNTIME_DIR / "status_check_webhook.txt"
-LAST_PUSHED_ERROR_FILE = RUNTIME_DIR / "last_pushed_error.txt"
-CURRENT_PIPELINE_PID_FILE = RUNTIME_DIR / "current_pipeline_pid.txt"
-STATUS_CHECK_LOG = RUNTIME_DIR / "status_check.log"
 
 
 @dataclass
@@ -672,124 +664,6 @@ def _build_stage_status_text(
     return "\n".join(lines)
 
 
-def _append_status_check_log(line: str) -> None:
-    """追加一行到 status_check 日志，仅记录不推送。"""
-    try:
-        with open(STATUS_CHECK_LOG, "a", encoding="utf-8") as f:
-            f.write(line)
-            if not line.endswith("\n"):
-                f.write("\n")
-    except Exception:
-        pass
-
-
-def _check_pipeline_error_and_notify() -> None:
-    """每半小时检查：无报错仅记「正常」日志；有报错则杀进程、记日志、推钉钉（同一次错误不重复推送）。"""
-    try:
-        if not STATUS_CHECK_WEBHOOK_FILE.exists():
-            return
-        webhook = STATUS_CHECK_WEBHOOK_FILE.read_text(encoding="utf-8").strip()
-        if not webhook:
-            return
-    except Exception:
-        return
-
-    outdir_path = ROOT_DIR / "test_data" / "out_dingtalk"
-    records_file = outdir_path / "pipeline_node_records.json"
-    error_parts: List[str] = []
-    error_key: Optional[str] = None
-
-    # 1) 流程节点记录中的错误
-    records = _load_json(records_file) if records_file.exists() else None
-    if records:
-        if records.get("error"):
-            error_parts.append(f"流程记录错误: {records.get('error')}")
-        for node in records.get("nodes") or []:
-            if node.get("status") == "fail":
-                err = node.get("error") or ""
-                error_parts.append(f"节点失败: {node.get('name', '?')} — {err}")
-        if error_parts:
-            error_key = f"records:{outdir_path}:{records_file.stat().st_mtime if records_file.exists() else 0}"
-
-    # 2) 最近一次 result.json 中 ok=false（网关返回失败）
-    result_files = list(RUNTIME_DIR.glob("*_result.json"))
-    if result_files:
-        latest_result = max(result_files, key=lambda p: p.stat().st_mtime)
-        data = _load_json(latest_result)
-        if isinstance(data, dict) and data.get("ok") is False:
-            err_msg = (data.get("error") or {})
-            if isinstance(err_msg, dict):
-                err_msg = err_msg.get("message", err_msg)
-            error_parts.append(f"网关返回失败: {err_msg}")
-            if not error_key:
-                error_key = f"result:{latest_result}"
-
-    ts_str = time.strftime("%Y-%m-%d %H:%M:%S")
-
-    if not error_parts:
-        _append_status_check_log(f"{ts_str} status_check ok")
-        return
-
-    # 有报错：杀进程、记日志、推钉钉（同一次错误不重复推送）
-    last_pushed = ""
-    if LAST_PUSHED_ERROR_FILE.exists():
-        try:
-            last_pushed = LAST_PUSHED_ERROR_FILE.read_text(encoding="utf-8").strip()
-        except Exception:
-            pass
-    if error_key and error_key == last_pushed:
-        return
-
-    kill_log = ""
-    if CURRENT_PIPELINE_PID_FILE.exists():
-        try:
-            pid_str = CURRENT_PIPELINE_PID_FILE.read_text(encoding="utf-8").strip()
-            pid = int(pid_str)
-            try:
-                if hasattr(os, "killpg"):
-                    os.killpg(pid, signal.SIGTERM)
-                    kill_log = f" 已杀进程组 pid={pid}"
-                else:
-                    os.kill(pid, signal.SIGTERM)
-                    kill_log = f" 已杀进程 pid={pid}"
-            except ProcessLookupError:
-                kill_log = f" 进程已退出 pid={pid}"
-            except Exception as e:
-                kill_log = f" 杀进程异常 pid={pid} err={e}"
-            try:
-                CURRENT_PIPELINE_PID_FILE.unlink(missing_ok=True)
-            except Exception:
-                pass
-        except (ValueError, OSError) as e:
-            kill_log = f" 读/杀 PID 异常: {e}"
-            try:
-                CURRENT_PIPELINE_PID_FILE.unlink(missing_ok=True)
-            except Exception:
-                pass
-
-    _append_status_check_log(f"{ts_str} error_detected{kill_log} {error_key or 'unknown'}")
-
-    msg = "【生信流程状态检查】检测到报错：\n\n" + "\n\n".join(error_parts)
-    if kill_log.strip():
-        msg += "\n\n已终止流程进程。"
-    _send_dingtalk_text(webhook, msg)
-    try:
-        if error_key:
-            LAST_PUSHED_ERROR_FILE.write_text(error_key, encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _status_check_loop() -> None:
-    """后台循环：每 STATUS_CHECK_INTERVAL_SEC 秒执行一次流程状态检查。"""
-    while True:
-        time.sleep(STATUS_CHECK_INTERVAL_SEC)
-        try:
-            _check_pipeline_error_and_notify()
-        except Exception as exc:
-            print(f"[WARN] status check failed: {exc}", flush=True)
-
-
 def _dump_incoming_payload(raw: Any, payload: Dict[str, Any]) -> None:
     ts = time.strftime("%Y%m%d_%H%M%S")
     millis = int((time.time() % 1) * 1000)
@@ -825,12 +699,6 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
     payload_path = RUNTIME_DIR / f"{session_key}_{ts}_payload.json"
     result_path = RUNTIME_DIR / f"{session_key}_{ts}_result.json"
     outdir = state.outdir or str(ROOT_DIR / "test_data" / "out_dingtalk")
-
-    # 供每半小时状态检查使用：用当前会话的 webhook 推送报错
-    try:
-        STATUS_CHECK_WEBHOOK_FILE.write_text(webhook, encoding="utf-8")
-    except Exception:
-        pass
 
     env = os.environ.copy()
     env["FASTQ_PATH"] = state.fastq or ""
@@ -871,12 +739,7 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
                 stdout=out_fp,
                 stderr=err_fp,
                 text=True,
-                start_new_session=True,
             )
-            try:
-                CURRENT_PIPELINE_PID_FILE.write_text(str(proc.pid), encoding="utf-8")
-            except Exception:
-                pass
             start_ts = time.time()
             last_sent_bwa_prog = 0
             last_reported_stages_hash = ""
@@ -1007,11 +870,6 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
             _send_dingtalk_text(webhook, f"{failed_panel}\n\n流程失败（exit={rc}）。\n{err_line}{err}\n结果文件: {result_path}")
     except Exception as exc:
         _send_dingtalk_text(webhook, f"流程异常：{exc}")
-    finally:
-        try:
-            CURRENT_PIPELINE_PID_FILE.unlink(missing_ok=True)
-        except Exception:
-            pass
 
 
 def _handle_message(payload: Dict[str, Any]) -> None:
@@ -1152,9 +1010,6 @@ def main() -> int:
     if not DEFAULT_REPLY_WEBHOOK:
         print("[WARN] DINGTALK_REPLY_WEBHOOK 未设置，将依赖消息中的 sessionWebhook 回复。")
     print("[INFO] DingTalk Stream bridge starting...")
-    # 每半小时检查流程状态，有报错则推送到钉钉
-    status_check_thread = threading.Thread(target=_status_check_loop, daemon=True)
-    status_check_thread.start()
     credential = dingtalk_stream.Credential(CLIENT_ID, CLIENT_SECRET)
     client = DebugDingTalkStreamClient(credential)
     client.register_callback_handler(dingtalk_stream.chatbot.ChatbotMessage.TOPIC, BioChatbotHandler())

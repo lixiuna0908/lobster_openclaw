@@ -1196,7 +1196,18 @@ def main() -> int:
                 "clean_r2": str(clean_fastq2) if clean_fastq2 else None,
             },
         )
-        post_trim_qc = _run_post_trim_qc(raw_qc, clean_fastq1, clean_fastq2, outdir)
+        qc_dir = outdir / "qc"
+        post_trim_qc_json = qc_dir / "post_trim_qc.json"
+        if post_trim_qc_json.exists():
+            # 已有结果则跳过，直接复用
+            with open(post_trim_qc_json, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            post_trim_qc = {
+                "post_qc_path": str(post_trim_qc_json),
+                "overall": loaded["post_trim_qc"]["overall"],
+            }
+        else:
+            post_trim_qc = _run_post_trim_qc(raw_qc, clean_fastq1, clean_fastq2, outdir)
         recorder.finish(
             n_post_trim_qc,
             outputs={"post_trim_qc_json": post_trim_qc["post_qc_path"]},
