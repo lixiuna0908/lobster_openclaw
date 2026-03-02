@@ -903,7 +903,19 @@ def _run_pipeline_async(session_key: str, state: SessionState) -> None:
         prediction = _load_json(prediction_path)
         if rc == 0:
             top_risks = prediction.get("predictions", [])[:5]
-            risk_lines = "\n".join([f"- {item['disease']}: {item['score']}" for item in top_risks])
+            if top_risks:
+                risk_lines = "\n".join([f"- {item['disease']}: {item['score']}" for item in top_risks])
+            else:
+                risk_lines = "- 未发现已知的致病性基因变异风险"
+                
+            pathogenic_variants = prediction.get("pathogenic_variants", [])
+            if pathogenic_variants:
+                pv_lines = "\n致病性变异:\n" + "\n".join([f"- {pv['snp']} ({pv['disease']})" for pv in pathogenic_variants[:3]])
+                if len(pathogenic_variants) > 3:
+                    pv_lines += f"\n- ...等共 {len(pathogenic_variants)} 个致病变异"
+            else:
+                pv_lines = ""
+
             content = (
                 "流程执行完成。\n"
                 f"VCF: {Path(outdir) / 'sample1.variants.vcf'}\n"
@@ -912,7 +924,7 @@ def _run_pipeline_async(session_key: str, state: SessionState) -> None:
                 f"风险等级: {prediction.get('overall_risk_level', 'unknown')}\n"
                 f"综合得分: {prediction.get('overall_score', 'unknown')}\n"
                 f"变异数: {prediction.get('variant_count', 'unknown')}\n"
-                f"主要预测风险 (Top 5):\n{risk_lines}\n"
+                f"主要预测风险 (Top 5):\n{risk_lines}{pv_lines}\n"
                 f"结果文件: {result_path}"
             )
             final_panel = _build_node_board_text(outdir_path, start_ts)
