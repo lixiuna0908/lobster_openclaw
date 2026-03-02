@@ -339,7 +339,12 @@ def _fastq_basic_stats(
                 continue
             if progress_callback and reads > 0 and reads % progress_interval == 0:
                 try:
-                    pos = fh.buffer.tell() if hasattr(fh, "buffer") else 0
+                    if hasattr(fh, "buffer") and hasattr(fh.buffer, "fileobj") and hasattr(fh.buffer.fileobj, "tell"):
+                        pos = fh.buffer.fileobj.tell()
+                    elif hasattr(fh, "buffer") and hasattr(fh.buffer, "tell"):
+                        pos = fh.buffer.tell()
+                    else:
+                        pos = 0
                 except (OSError, AttributeError):
                     pos = 0
                 progress_callback(min(pos, total_bytes_this_file), total_bytes_this_file)

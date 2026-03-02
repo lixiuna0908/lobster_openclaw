@@ -741,8 +741,9 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
                 text=True,
             )
             start_ts = time.time()
-            last_sent_bwa_prog = 0
+            last_sent_prog = 0
             last_reported_stages_hash = ""
+            last_node_name = ""
             last_ten_min_push_ts = 0.0  # 上次因「节点运行>10分钟」推送的时间，用于每10分钟推送一次
             
             while True:
@@ -757,11 +758,13 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
                 # 读取记录中的内部节点进度（例如 HaplotypeCaller 报上来的进度）及当前节点已运行时长
                 node_prog = 0
                 node_elapsed_sec = 0.0  # 当前运行中节点已运行时长（秒）
+                current_node_name = ""
                 records = _load_json(records_file)
                 nodes = records.get("nodes")
                 if isinstance(nodes, list) and len(nodes) > 0:
                     current_node = nodes[-1]
                     if isinstance(current_node, dict):
+                        current_node_name = str(current_node.get("name") or "")
                         if current_node.get("status") == "running":
                             started_at = current_node.get("started_at")
                             if started_at:
@@ -774,20 +777,24 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
                                     pass
                         if current_node.get("status") == "running" and "progress" in current_node:
                             node_prog = current_node.get("progress", 0)
-                            stage = NODE_TO_STAGE.get(str(current_node.get("name") or ""))
+                            stage = NODE_TO_STAGE.get(current_node_name)
                             if stage and stage in stage_progress and stage_progress[stage] < 100:
                                 stage_progress[stage] = node_prog
                             
                 other_stages_hash = str([(k, stage_progress[k]) for k in sorted(stage_progress.keys()) if k != 2])
                 
                 should_push = False
-                if other_stages_hash != last_reported_stages_hash:
+                if current_node_name != last_node_name:
+                    last_node_name = current_node_name
+                    last_sent_prog = 0
+                    should_push = True
+                    last_ten_min_push_ts = 0.0
+                elif other_stages_hash != last_reported_stages_hash:
                     should_push = True
                     last_ten_min_push_ts = 0.0  # 节点切换，重置 10 分钟间隔
-                elif bwa_prog >= last_sent_bwa_prog + 5:
+                elif bwa_prog >= last_sent_prog + 5:
                     should_push = True
-                elif node_prog > 0 and node_prog >= last_sent_bwa_prog + 5:
-                    # 借用 last_sent_bwa_prog 变量名作为通用的进度记录间隔(5%)
+                elif node_prog > 0 and node_prog >= last_sent_prog + 5:
                     should_push = True
                 elif (
                     isinstance(nodes, list)
@@ -810,10 +817,10 @@ def _run_pipeline_async(session_key: str, webhook: str, state: SessionState) -> 
                         panel = _build_node_board_text(outdir_path, start_ts)
                         _send_dingtalk_text(webhook, panel)
                         last_reported_stages_hash = other_stages_hash
-                        if bwa_prog >= last_sent_bwa_prog + 5:
-                            last_sent_bwa_prog = (bwa_prog // 5) * 5
-                        elif node_prog > 0 and node_prog >= last_sent_bwa_prog + 5:
-                            last_sent_bwa_prog = (node_prog // 5) * 5
+                        if bwa_prog >= last_sent_prog + 5:
+                            last_sent_prog = (bwa_prog // 5) * 5
+                        elif node_prog > 0 and node_prog >= last_sent_prog + 5:
+                            last_sent_prog = (node_prog // 5) * 5
                         # 若本次推送是因「节点运行>10分钟」触发，记录时间以便下次 10 分钟后再推
                         if (
                             isinstance(nodes, list)
