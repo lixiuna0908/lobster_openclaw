@@ -35,9 +35,37 @@ class NodeRecorder:
         self.started_at = _now_iso()
         self.nodes: List[Dict[str, Any]] = []
         self._counter = 0
+        self._loaded_existing = False
+        
+        # 初始化时尝试加载已有的记录
+        out = self.outdir / "pipeline_node_records.json"
+        if out.exists():
+            try:
+                existing = json.loads(out.read_text(encoding="utf-8"))
+                if "nodes" in existing and isinstance(existing["nodes"], list):
+                    self.nodes = existing["nodes"]
+                    self._counter = max([n.get("id", 0) for n in self.nodes] + [0])
+                    if "started_at" in existing:
+                        self.started_at = existing["started_at"]
+                self._loaded_existing = True
+            except Exception:
+                pass
 
     def start(self, name: str, inputs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         self._counter += 1
+        
+        # 检查是否已存在该节点的记录
+        existing_node = None
+        if hasattr(self, "_loaded_existing") and self._loaded_existing:
+            for n in self.nodes:
+                if n.get("name") == name:
+                    existing_node = n
+                    break
+                    
+        if existing_node and existing_node.get("status") == "ok":
+            # 如果节点已经成功完成，直接返回现有的节点记录
+            return existing_node
+            
         node = {
             "id": self._counter,
             "name": name,
@@ -49,7 +77,14 @@ class NodeRecorder:
             "stats": {},
             "commands": [],
         }
-        self.nodes.append(node)
+        
+        # 如果存在旧的失败/运行中记录，替换它
+        if existing_node:
+            idx = self.nodes.index(existing_node)
+            self.nodes[idx] = node
+        else:
+            self.nodes.append(node)
+            
         self.write("running")  # 将刚启动的状态落盘，以便监控程序读取
         return node
 
@@ -62,9 +97,15 @@ class NodeRecorder:
         stats: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
     ) -> None:
-        node["status"] = status
-        node["finished_at"] = _now_iso()
-        node["duration_ms"] = int((time.time() - float(node.pop("_t0"))) * 1000)
+        # 如果节点已经有 finished_at 且状态为 ok，说明是断点续跑跳过的节点，不需要更新时间
+        if node.get("status") == "ok" and "finished_at" in node and not node.get("skipped"):
+            pass
+        else:
+            node["status"] = status
+            node["finished_at"] = _now_iso()
+            if "_t0" in node:
+                node["duration_ms"] = int((time.time() - float(node.pop("_t0"))) * 1000)
+            
         if outputs:
             node["outputs"] = outputs
         if stats:
@@ -110,6 +151,7 @@ class NodeRecorder:
             
         # 安全写入：先写临时文件再重命名，防止其它进程读到只写了一半的 JSON
         out = self.outdir / "pipeline_node_records.json"
+        
         tmp_out = out.with_suffix(".json.tmp")
         tmp_out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp_out.replace(out)
@@ -684,6 +726,67 @@ def _run_nv_score_variants(
     return annotated_vcf
 
 
+
+def _ensure_vcf_chr_prefix(vcf_path: Path, outdir: Path, ref_fa: Path) -> Path:
+    import gzip
+    import subprocess
+    
+    ref_has_chr = False
+    try:
+        with open(str(ref_fa) + ".fai", 'r') as f:
+            for line in f:
+                if line.startswith('chr'):
+                    ref_has_chr = True
+                    break
+    except Exception:
+        ref_has_chr = True # assume true if we can't read fai
+
+    if ref_has_chr:
+        fixed_vcf = outdir / f"{vcf_path.name.replace('.vcf.gz', '')}_chr.vcf.gz"
+        if fixed_vcf.exists():
+            print(f"[INFO] Found {fixed_vcf.name} in {outdir}, using it directly.")
+            return fixed_vcf
+
+    has_chr = False
+    needs_chr = False
+    try:
+        with gzip.open(vcf_path, 'rt') as f:
+            for line in f:
+                if line.startswith('##contig=<ID='):
+                    contig_id = line.split('ID=')[1].split(',')[0].split('>')[0]
+                    if contig_id.startswith('chr'):
+                        has_chr = True
+                    else:
+                        needs_chr = True
+                    break
+                if not line.startswith('#'):
+                    if not line.startswith('chr'):
+                        needs_chr = True
+                    else:
+                        has_chr = True
+                    break
+    except Exception as e:
+        print(f"[WARN] Could not read {vcf_path} to check chr prefix: {e}")
+        return vcf_path
+        
+    if ref_has_chr and needs_chr and not has_chr:
+        fixed_vcf = outdir / f"{vcf_path.name.replace('.vcf.gz', '')}_chr.vcf.gz"
+        if fixed_vcf.exists():
+            return fixed_vcf
+            
+        print(f"[INFO] Adding 'chr' prefix to {vcf_path}...")
+        rename_file = outdir / "rename_chrs.txt"
+        with open(rename_file, 'w') as f:
+            for i in list(range(1, 23)) + ['X', 'Y', 'MT']:
+                f.write(f"{i} chr{i}\n")
+                
+        cmd = ["bcftools", "annotate", "--rename-chrs", str(rename_file), "-O", "z", "-o", str(fixed_vcf), str(vcf_path)]
+        subprocess.run(cmd, check=True)
+        subprocess.run(["bcftools", "index", "-t", str(fixed_vcf)], check=True)
+        return fixed_vcf
+        
+    return vcf_path
+
 def _filter_variant_tranches(
     gatk_bin: str,
     annotated_vcf: Path,
@@ -778,9 +881,34 @@ def _pick_snp_name(record_id: str, info_map: Dict[str, str], chrom: str, pos: st
     return f"{chrom}:{pos}:{ref}>{alt}"
 
 
-def _vcf_to_csv(vcf_path: Path, csv_path: Path, clinvar_path: Optional[Path] = None) -> Dict[str, Any]:
+def _vcf_to_csv(vcf_path: Path, csv_path: Path, clinvar_path: Optional[Path] = None, dbsnp_path: Optional[Path] = None) -> Dict[str, Any]:
     import csv
     
+
+
+    def _get_vcf_chrom(vcf_obj, chrom):
+        if not vcf_obj: return chrom
+        if chrom in vcf_obj.header.contigs:
+            return chrom
+        if chrom.startswith("chr"):
+            alt = chrom[3:]
+            if alt in vcf_obj.header.contigs:
+                return alt
+        else:
+            alt = "chr" + chrom
+            if alt in vcf_obj.header.contigs:
+                return alt
+        return chrom
+
+    dbsnp_vcf = None
+
+    if dbsnp_path and dbsnp_path.exists():
+        try:
+            import pysam
+            dbsnp_vcf = pysam.VariantFile(str(dbsnp_path))
+        except Exception as e:
+            print(f"[WARN] Failed to load dbSNP VCF: {e}", file=sys.stderr)
+
     clinvar_vcf = None
     if clinvar_path and clinvar_path.exists():
         try:
@@ -802,13 +930,24 @@ def _vcf_to_csv(vcf_path: Path, csv_path: Path, clinvar_path: Optional[Path] = N
             dp = info_map.get("DP", "")
             af = info_map.get("AF", "")
             
+
+            # Query dbSNP for rsID if missing
+            if record_id == "." and dbsnp_vcf:
+                try:
+                    for rec in dbsnp_vcf.fetch(_get_vcf_chrom(dbsnp_vcf, chrom), int(pos) - 1, int(pos)):
+                        if rec.ref == ref and alt in rec.alts:
+                            record_id = rec.id
+                            break
+                except Exception:
+                    pass
+
             clinvar_sig = ""
             clinvar_disease = ""
             
             if clinvar_vcf:
                 try:
                     # Query clinvar for this position
-                    for rec in clinvar_vcf.fetch(chrom, int(pos) - 1, int(pos)):
+                    for rec in clinvar_vcf.fetch(_get_vcf_chrom(clinvar_vcf, chrom), int(pos) - 1, int(pos)):
                         if rec.ref == ref and alt in rec.alts:
                             sig = rec.info.get("CLNSIG", [])
                             if isinstance(sig, tuple):
@@ -1049,37 +1188,51 @@ def main() -> int:
 
     try:
         n_tools = recorder.start("tool_check", {"tools": ["bwa", "samtools", "gatk", "fastp", "bcftools"]})
-        bwa_bin = _resolve_tool("bwa")
-        samtools_bin = _resolve_tool("samtools")
-        gatk_bin = _resolve_tool("gatk")
-        fastp_bin = _resolve_tool("fastp")
-        _resolve_tool("bcftools")
-        recorder.finish(n_tools)
+        if n_tools.get("status") != "ok":
+            bwa_bin = _resolve_tool("bwa")
+            samtools_bin = _resolve_tool("samtools")
+            gatk_bin = _resolve_tool("gatk")
+            fastp_bin = _resolve_tool("fastp")
+            _resolve_tool("bcftools")
+            recorder.finish(n_tools)
+        else:
+            bwa_bin = _resolve_tool("bwa")
+            samtools_bin = _resolve_tool("samtools")
+            gatk_bin = _resolve_tool("gatk")
+            fastp_bin = _resolve_tool("fastp")
+            _resolve_tool("bcftools")
 
         n_ref_resolve = recorder.start("resolve_reference_input", {"ref_arg": args.ref})
-        ref_in = _resolve_ref_input(args.ref)
-        recorder.finish(n_ref_resolve, outputs={"ref_input": str(ref_in)})
+        if n_ref_resolve.get("status") != "ok":
+            ref_in = _resolve_ref_input(args.ref)
+            recorder.finish(n_ref_resolve, outputs={"ref_input": str(ref_in)})
+        else:
+            ref_in = Path(n_ref_resolve["outputs"]["ref_input"])
 
         n_ref_mat = recorder.start("materialize_reference", {"ref_input": str(ref_in)})
-        ref_fa = _materialize_reference(ref_in, outdir)
-        recorder.finish(n_ref_mat, outputs={"ref_fasta": str(ref_fa)})
+        if n_ref_mat.get("status") != "ok":
+            ref_fa = _materialize_reference(ref_in, outdir)
+            recorder.finish(n_ref_mat, outputs={"ref_fasta": str(ref_fa)})
+        else:
+            ref_fa = Path(n_ref_mat["outputs"]["ref_fasta"])
 
         n_ref_idx = recorder.start("build_reference_index", {"ref_fasta": str(ref_fa)})
-        if not Path(str(ref_fa) + ".fai").exists():
-            _run([samtools_bin, "faidx", str(ref_fa)], node=n_ref_idx)
-        ref_dict = ref_fa.with_suffix(".dict")
-        if not ref_dict.exists():
-            _run([gatk_bin, "CreateSequenceDictionary", "-R", str(ref_fa), "-O", str(ref_dict)], node=n_ref_idx)
-        bwa_idx = [Path(str(ref_fa) + ext) for ext in [".amb", ".ann", ".bwt", ".pac", ".sa"]]
-        if not all(p.exists() for p in bwa_idx):
-            _run_bwa_index_with_progress(bwa_bin, ref_fa, outdir, node=n_ref_idx)
-        recorder.finish(
-            n_ref_idx,
-            outputs={
-                "fai": str(Path(str(ref_fa) + ".fai")),
-                "dict": str(ref_dict),
-            },
-        )
+        if n_ref_idx.get("status") != "ok":
+            if not Path(str(ref_fa) + ".fai").exists():
+                _run([samtools_bin, "faidx", str(ref_fa)], node=n_ref_idx)
+            ref_dict = ref_fa.with_suffix(".dict")
+            if not ref_dict.exists():
+                _run([gatk_bin, "CreateSequenceDictionary", "-R", str(ref_fa), "-O", str(ref_dict)], node=n_ref_idx)
+            bwa_idx = [Path(str(ref_fa) + ext) for ext in [".amb", ".ann", ".bwt", ".pac", ".sa"]]
+            if not all(p.exists() for p in bwa_idx):
+                _run_bwa_index_with_progress(bwa_bin, ref_fa, outdir, node=n_ref_idx)
+            recorder.finish(
+                n_ref_idx,
+                outputs={
+                    "fai": str(Path(str(ref_fa) + ".fai")),
+                    "dict": str(ref_dict),
+                },
+            )
 
         sample = args.sample_id
         sam = outdir / f"{sample}.sam"
@@ -1100,23 +1253,36 @@ def main() -> int:
                 "max_n_rate": args.max_n_rate,
             },
         )
-        raw_qc = _run_raw_qc(
-            fastq1,
-            fastq2,
-            outdir,
-            qc_gate=args.qc_gate,
-            max_n_rate=args.max_n_rate,
-            recorder=recorder,
-            node=n_raw_qc,
-        )
-        recorder.finish(
-            n_raw_qc,
-            outputs={"raw_qc_json": raw_qc["raw_qc_path"]},
-            stats={
-                "total_reads": raw_qc["overall"]["total_reads"],
-                "n_rate": raw_qc["overall"]["n_rate"],
-            },
-        )
+        qc_dir = outdir / "qc"
+        raw_qc_path = qc_dir / "raw_qc.json"
+        if n_raw_qc.get("status") == "ok":
+            print(f"[INFO] Node raw_fastq_qc already completed. Skipping.")
+            with open(raw_qc_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            raw_qc = {
+                "raw_qc_path": str(raw_qc_path),
+                "r1": loaded["raw_fastq_qc"]["r1"],
+                "r2": loaded["raw_fastq_qc"]["r2"],
+                "overall": loaded["raw_fastq_qc"]["overall"],
+            }
+        else:
+            raw_qc = _run_raw_qc(
+                fastq1,
+                fastq2,
+                outdir,
+                qc_gate=args.qc_gate,
+                max_n_rate=args.max_n_rate,
+                recorder=recorder,
+                node=n_raw_qc,
+            )
+            recorder.finish(
+                n_raw_qc,
+                outputs={"raw_qc_json": raw_qc["raw_qc_path"]},
+                stats={
+                    "total_reads": raw_qc["overall"]["total_reads"],
+                    "n_rate": raw_qc["overall"]["n_rate"],
+                },
+            )
 
         n_trim = recorder.start(
             "trim_adapters_and_low_quality",
@@ -1127,27 +1293,40 @@ def main() -> int:
                 "min_qscore": args.min_qscore,
             },
         )
-        trim_outputs = _trim_fastq(
-            fastp_bin,
-            fastq1,
-            fastq2,
-            outdir,
-            min_read_length=args.min_read_length,
-            min_qscore=args.min_qscore,
-            threads=args.threads,
-            node=n_trim,
-        )
-        clean_fastq1 = Path(trim_outputs["clean_r1"]).resolve()
-        clean_fastq2 = Path(trim_outputs["clean_r2"]).resolve() if trim_outputs["clean_r2"] else None
-        recorder.finish(
-            n_trim,
-            outputs={
-                "clean_r1": str(clean_fastq1),
-                "clean_r2": str(clean_fastq2) if clean_fastq2 else "",
-                "fastp_json": trim_outputs["fastp_json"],
-                "fastp_html": trim_outputs["fastp_html"],
-            },
-        )
+        
+        clean_dir = outdir / "clean"
+        qc_dir = outdir / "qc"
+        clean_r1 = clean_dir / "clean_R1.fastq.gz"
+        clean_r2 = clean_dir / "clean_R2.fastq.gz"
+        fastp_json = qc_dir / "fastp.json"
+        fastp_html = qc_dir / "fastp.html"
+        
+        if n_trim.get("status") == "ok":
+            print(f"[INFO] Node trim_adapters_and_low_quality already completed. Skipping.")
+            clean_fastq1 = clean_r1.resolve()
+            clean_fastq2 = clean_r2.resolve() if fastq2 and clean_r2.exists() else None
+        else:
+            trim_outputs = _trim_fastq(
+                fastp_bin,
+                fastq1,
+                fastq2,
+                outdir,
+                min_read_length=args.min_read_length,
+                min_qscore=args.min_qscore,
+                threads=args.threads,
+                node=n_trim,
+            )
+            clean_fastq1 = Path(trim_outputs["clean_r1"]).resolve()
+            clean_fastq2 = Path(trim_outputs["clean_r2"]).resolve() if trim_outputs["clean_r2"] else None
+            recorder.finish(
+                n_trim,
+                outputs={
+                    "clean_r1": str(clean_fastq1),
+                    "clean_r2": str(clean_fastq2) if clean_fastq2 else "",
+                    "fastp_json": trim_outputs["fastp_json"],
+                    "fastp_html": trim_outputs["fastp_html"],
+                },
+            )
 
         n_post_trim_qc = recorder.start(
             "post_trim_qc",
@@ -1158,8 +1337,8 @@ def main() -> int:
         )
         qc_dir = outdir / "qc"
         post_trim_qc_json = qc_dir / "post_trim_qc.json"
-        if post_trim_qc_json.exists():
-            # 已有结果则跳过，直接复用
+        if n_post_trim_qc.get("status") == "ok":
+            print(f"[INFO] Node post_trim_qc already completed. Skipping.")
             with open(post_trim_qc_json, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
             post_trim_qc = {
@@ -1168,14 +1347,14 @@ def main() -> int:
             }
         else:
             post_trim_qc = _run_post_trim_qc(raw_qc, clean_fastq1, clean_fastq2, outdir)
-        recorder.finish(
-            n_post_trim_qc,
-            outputs={"post_trim_qc_json": post_trim_qc["post_qc_path"]},
-            stats={
-                "read_retention": post_trim_qc["overall"]["read_retention"],
-                "n_rate_delta": post_trim_qc["overall"]["n_rate_delta"],
-            },
-        )
+            recorder.finish(
+                n_post_trim_qc,
+                outputs={"post_trim_qc_json": post_trim_qc["post_qc_path"]},
+                stats={
+                    "read_retention": post_trim_qc["overall"]["read_retention"],
+                    "n_rate_delta": post_trim_qc["overall"]["n_rate_delta"],
+                },
+            )
 
         rg = f"@RG\\tID:{sample}\\tSM:{sample}\\tPL:ILLUMINA"
         bwa_cmd = [bwa_bin, "mem", "-t", str(args.threads), "-R", rg, str(ref_fa), str(clean_fastq1)]
@@ -1190,40 +1369,57 @@ def main() -> int:
                 "threads": args.threads,
             },
         )
-        with sam.open("w", encoding="utf-8") as sam_out:
-            t0 = time.time()
-            subprocess.run(bwa_cmd, stdout=sam_out, check=True)
-            recorder.record_command(n_align, bwa_cmd, int((time.time() - t0) * 1000))
-        recorder.finish(n_align, outputs={"sam": str(sam)})
+        if n_align.get("status") == "ok":
+            print(f"[INFO] Node align_reads_bwa_mem already completed. Skipping.")
+        else:
+            with sam.open("w", encoding="utf-8") as sam_out:
+                t0 = time.time()
+                subprocess.run(bwa_cmd, stdout=sam_out, check=True)
+                recorder.record_command(n_align, bwa_cmd, int((time.time() - t0) * 1000))
+            recorder.finish(n_align, outputs={"sam": str(sam)})
 
         n_sort = recorder.start("sort_bam_samtools", {"sam": str(sam)})
-        _run([samtools_bin, "sort", "-@", str(args.threads), "-o", str(sorted_bam), str(sam)], node=n_sort)
-        recorder.finish(n_sort, outputs={"bam": str(sorted_bam)})
+        if n_sort.get("status") == "ok":
+            print(f"[INFO] Node sort_bam_samtools already completed. Skipping.")
+        else:
+            _run([samtools_bin, "sort", "-@", str(args.threads), "-o", str(sorted_bam), str(sam)], node=n_sort)
+            recorder.finish(n_sort, outputs={"bam": str(sorted_bam)})
 
         n_dedup = recorder.start("mark_duplicates", {"sorted_bam": str(sorted_bam)})
-        dedup_outputs = _mark_duplicates(gatk_bin, sorted_bam, sample, outdir, node=n_dedup)
-        dedup_bam = Path(dedup_outputs["dedup_bam"]).resolve()
-        recorder.finish(
-            n_dedup,
-            outputs={
-                "dedup_bam": str(dedup_bam),
-                "dedup_bai": dedup_outputs["dedup_bai"],
-                "dedup_metrics": dedup_outputs["dedup_metrics"],
-            },
-        )
+        if n_dedup.get("status") == "ok":
+            print(f"[INFO] Node mark_duplicates already completed. Skipping.")
+            dedup_metrics = outdir / f"{sample}.dedup.metrics.txt"
+        else:
+            dedup_outputs = _mark_duplicates(gatk_bin, sorted_bam, sample, outdir, node=n_dedup)
+            dedup_bam = Path(dedup_outputs["dedup_bam"]).resolve()
+            recorder.finish(
+                n_dedup,
+                outputs={
+                    "dedup_bam": str(dedup_bam),
+                    "dedup_bai": dedup_outputs["dedup_bai"],
+                    "dedup_metrics": dedup_outputs["dedup_metrics"],
+                },
+            )
 
         n_bam_idx = recorder.start("index_bam_samtools", {"bam": str(dedup_bam)})
-        _run([samtools_bin, "index", str(dedup_bam)], node=n_bam_idx)
-        recorder.finish(n_bam_idx, outputs={"bai": str(Path(str(dedup_bam) + ".bai"))})
+        if n_bam_idx.get("status") == "ok":
+            print(f"[INFO] Node index_bam_samtools already completed. Skipping.")
+        else:
+            _run([samtools_bin, "index", str(dedup_bam)], node=n_bam_idx)
+            recorder.finish(n_bam_idx, outputs={"bai": str(Path(str(dedup_bam) + ".bai"))})
 
         n_align_qc = recorder.start("alignment_qc", {"bam": str(dedup_bam)})
-        align_qc_res = _bam_qc(samtools_bin, dedup_bam, outdir, node=n_align_qc)
-        recorder.finish(n_align_qc, outputs={"alignment_qc_json": align_qc_res["alignment_qc_json"]}, stats=align_qc_res["stats"])
+        qc_json = outdir / "qc" / "alignment_qc.json"
+        if n_align_qc.get("status") == "ok":
+            print(f"[INFO] Node alignment_qc already completed. Skipping.")
+        else:
+            align_qc_res = _bam_qc(samtools_bin, dedup_bam, outdir, node=n_align_qc)
+            recorder.finish(n_align_qc, outputs={"alignment_qc_json": align_qc_res["alignment_qc_json"]}, stats=align_qc_res["stats"])
 
         if args.run_bqsr:
             if not args.known_sites:
                 raise RuntimeError("--run-bqsr requires --known-sites")
-            known_sites_path = Path(args.known_sites).resolve()
+            known_sites_path = _ensure_vcf_chr_prefix(Path(args.known_sites).resolve(), Path(args.known_sites).resolve().parent, ref_fa)
             n_bqsr = recorder.start("bqsr_recalibration", {"bam": str(dedup_bam), "known_sites": str(known_sites_path)})
             bqsr_res = _run_bqsr(gatk_bin, dedup_bam, ref_fa, known_sites_path, sample, outdir, node=n_bqsr)
             dedup_bam = Path(bqsr_res["recal_bam"]).resolve()
@@ -1234,32 +1430,38 @@ def main() -> int:
             recorder.finish(n_recal_idx, outputs={"bai": str(Path(str(dedup_bam) + ".bai"))})
 
         n_call = recorder.start("call_variants_gatk_haplotypecaller", {"bam": str(dedup_bam), "ref": str(ref_fa)})
-        _run_with_progress(
-            [
-                gatk_bin,
-                "HaplotypeCaller",
-                "-R",
-                str(ref_fa),
-                "-I",
-                str(dedup_bam),
-                "-O",
-                str(raw_vcf),
-            ],
-            node=n_call,
-            recorder=recorder
-        )
-        recorder.finish(n_call, outputs={"vcf": str(raw_vcf)})
+        if n_call.get("status") == "ok":
+            print(f"[INFO] Node call_variants_gatk_haplotypecaller already completed. Skipping.")
+        else:
+            _run_with_progress(
+                [
+                    gatk_bin,
+                    "HaplotypeCaller",
+                    "-R",
+                    str(ref_fa),
+                    "-I",
+                    str(dedup_bam),
+                    "-O",
+                    str(raw_vcf),
+                ],
+                node=n_call,
+                recorder=recorder
+            )
+            recorder.finish(n_call, outputs={"vcf": str(raw_vcf)})
 
         n_vcf_header = recorder.start("ensure_vcf_reference_header", {"vcf": str(raw_vcf), "ref": str(ref_fa)})
-        _inject_reference_header(raw_vcf, ref_fa)
-        raw_variants = _count_vcf_variants(raw_vcf)
-        recorder.finish(n_vcf_header, stats={"variants": raw_variants})
+        if n_vcf_header.get("status") != "ok":
+            _inject_reference_header(raw_vcf, ref_fa)
+            raw_variants = _count_vcf_variants(raw_vcf)
+            recorder.finish(n_vcf_header, stats={"variants": raw_variants})
+        else:
+            raw_variants = n_vcf_header.get("stats", {}).get("variants", _count_vcf_variants(raw_vcf))
 
         if args.run_cnn:
             cnn_res_str = args.cnn_resource or args.known_sites
             if not cnn_res_str:
                 raise RuntimeError("--run-cnn requires --cnn-resource or --known-sites")
-            cnn_resource_path = Path(cnn_res_str).resolve()
+            cnn_resource_path = _ensure_vcf_chr_prefix(Path(cnn_res_str).resolve(), Path(cnn_res_str).resolve().parent, ref_fa)
             
             if raw_variants == 0:
                 print(f"[INFO] No variants found in {raw_vcf}. Skipping CNN scoring and filtering.")
@@ -1343,14 +1545,36 @@ if __name__ == "__main__":
                     sp.run(["python3", str(fix_script), str(raw_vcf), str(fixed_vcf)], check=True)
                     raw_vcf = fixed_vcf
 
-                annotated_vcf = _run_nv_score_variants(gatk_bin, raw_vcf, ref_fa, sample, outdir, node=n_cnn)
-                recorder.finish(n_cnn, outputs={"annotated_vcf": str(annotated_vcf)})
+                annotated_vcf = outdir / f"{sample}.variants.cnn_scored.vcf"
+                if n_cnn.get("status") == "ok":
+                    print(f"[INFO] Node nv_score_variants already completed. Skipping.")
+                else:
+                    annotated_vcf = _run_nv_score_variants(gatk_bin, raw_vcf, ref_fa, sample, outdir, node=n_cnn)
+                    recorder.finish(n_cnn, outputs={"annotated_vcf": str(annotated_vcf)})
                 
                 n_filter = recorder.start("filter_variant_tranches", {"vcf": str(annotated_vcf), "resource": str(cnn_resource_path)})
-                filtered_vcf = _filter_variant_tranches(gatk_bin, annotated_vcf, cnn_resource_path, sample, outdir, node=n_filter)
+                filtered_vcf = outdir / f"{sample}.variants.cnn_filtered.vcf"
+
+                if n_filter.get("status") == "ok":
+                    print(f"[INFO] Node filter_variant_tranches already completed. Skipping.")
+                else:
+                    try:
+                        filtered_vcf = _filter_variant_tranches(gatk_bin, annotated_vcf, cnn_resource_path, sample, outdir, node=n_filter)
+                    except Exception as e:
+                        print(f"[WARN] filter_variant_tranches failed ({e}). Falling back to hard filtering.")
+                        n_filter["status"] = "error"
+                        n_filter["error"] = str(e)
+                        n_filter_hard = recorder.start("filter_variants_hard", {"vcf": str(raw_vcf)})
+                        filtered_vcf = outdir / f"{sample}.variants.filtered.vcf"
+                        filtered_vcf = _filter_variants_hard(gatk_bin, raw_vcf, sample, outdir, node=n_filter_hard)
+
         else:
             n_filter = recorder.start("filter_variants_hard", {"vcf": str(raw_vcf)})
-            filtered_vcf = _filter_variants_hard(gatk_bin, raw_vcf, sample, outdir, node=n_filter)
+            filtered_vcf = outdir / f"{sample}.variants.filtered.vcf"
+            if n_filter.get("status") == "ok":
+                print(f"[INFO] Node filter_variants_hard already completed. Skipping.")
+            else:
+                filtered_vcf = _filter_variants_hard(gatk_bin, raw_vcf, sample, outdir, node=n_filter)
             
         variants = _count_pass_variants(filtered_vcf)
         filtered_total = _count_vcf_variants(filtered_vcf)
@@ -1368,34 +1592,47 @@ if __name__ == "__main__":
         n_vcf_header_filtered = recorder.start(
             "ensure_filtered_vcf_reference_header", {"vcf": str(filtered_vcf), "ref": str(ref_fa)}
         )
-        _inject_reference_header(filtered_vcf, ref_fa)
-        recorder.finish(n_vcf_header_filtered, stats={"pass_variants": variants})
+        if n_vcf_header_filtered.get("status") != "ok":
+            _inject_reference_header(filtered_vcf, ref_fa)
+            recorder.finish(n_vcf_header_filtered, stats={"pass_variants": variants})
 
         n_csv = recorder.start("convert_vcf_to_csv", {"vcf": str(filtered_vcf)})
         clinvar_path = Path(__file__).resolve().parent.parent / "openKnowledgeDB" / "clinvar" / "clinvar.vcf.gz"
-        csv_stats = _vcf_to_csv(filtered_vcf, csv_file, clinvar_path=clinvar_path)
-        recorder.finish(n_csv, outputs={"csv": str(csv_file)}, stats=csv_stats)
+        if n_csv.get("status") == "ok":
+            print(f"[INFO] Node convert_vcf_to_csv already completed. Skipping.")
+        else:
+            csv_stats = _vcf_to_csv(filtered_vcf, csv_file, clinvar_path=clinvar_path, dbsnp_path=Path(args.known_sites) if args.known_sites else None)
+            recorder.finish(n_csv, outputs={"csv": str(csv_file)}, stats=csv_stats)
 
         n_pred = recorder.start("disease_prediction_from_csv", {"csv": str(csv_file)})
-        prediction = _predict_disease(csv_file)
-        prediction_json.write_text(json.dumps(prediction, ensure_ascii=False, indent=2), encoding="utf-8")
-        recorder.finish(
-            n_pred,
-            outputs={"prediction_json": str(prediction_json)},
-            stats={
-                "overall_risk_level": prediction["overall_risk_level"],
-                "variant_count": prediction["variant_count"],
-            },
-        )
+        if n_pred.get("status") == "ok":
+            print(f"[INFO] Node disease_prediction_from_csv already completed. Skipping.")
+            with open(prediction_json, "r", encoding="utf-8") as f:
+                prediction = json.load(f)
+        else:
+            prediction = _predict_disease(csv_file)
+            prediction_json.write_text(json.dumps(prediction, ensure_ascii=False, indent=2), encoding="utf-8")
+            recorder.finish(
+                n_pred,
+                outputs={"prediction_json": str(prediction_json)},
+                stats={
+                    "overall_risk_level": prediction["overall_risk_level"],
+                    "variant_count": prediction["variant_count"],
+                },
+            )
 
         n_report = recorder.start("generate_markdown_report", {"report": str(report)})
         filter_method = "GATK NVScoreVariants + FilterVariantTranches" if args.run_cnn else "GATK VariantFiltration (hard-filter)"
-        _write_report(report, fastq1, fastq2, ref_fa, filtered_vcf, csv_file, prediction, dedup_bam, variants, filter_method)
-        recorder.finish(n_report, outputs={"report": str(report)})
+        if n_report.get("status") == "ok":
+            print(f"[INFO] Node generate_markdown_report already completed. Skipping.")
+        else:
+            _write_report(report, fastq1, fastq2, ref_fa, filtered_vcf, csv_file, prediction, dedup_bam, variants, filter_method)
+            recorder.finish(n_report, outputs={"report": str(report)})
 
         n_cleanup = recorder.start("cleanup_temp_files", {"sam": str(sam)})
-        sam.unlink(missing_ok=True)
-        recorder.finish(n_cleanup, outputs={"sam_removed": str(sam)})
+        if n_cleanup.get("status") != "ok":
+            sam.unlink(missing_ok=True)
+            recorder.finish(n_cleanup, outputs={"sam_removed": str(sam)})
 
         records_path = recorder.write("ok")
         envelope = {

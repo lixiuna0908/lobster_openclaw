@@ -38,7 +38,7 @@ KEYWORDS = [
     kw.strip()
     for kw in os.getenv(
         "DINGTALK_KEYWORDS",
-        "帮我运行,运行流程,开始处理,FASTQ,FASTQ1,FASTQ2,ref,重新运行",
+        "帮我运行,运行流程,开始处理,FASTQ,FASTQ1,FASTQ2,ref,进度,状态",
     ).split(",")
     if kw.strip()
 ]
@@ -126,7 +126,7 @@ def _extract_paths(text: str) -> Tuple[Optional[str], Optional[str], Optional[st
 
 
 def _should_run(text: str) -> bool:
-    run_words = ["帮我运行", "运行流程", "开始处理", "开始运行", "run", "执行", "重新运行"]
+    run_words = ["帮我运行", "运行流程", "开始处理", "开始运行", "run", "执行"]
     lower = text.lower()
     return any(w.lower() in lower for w in run_words)
 
@@ -422,7 +422,12 @@ def _build_node_board_text(outdir_path: Path, total_started_at: float) -> str:
                     _est_h = _node_estimate_hours(name, fastq_total_bytes)
                     if _est_h > 0 and _elapsed > 0:
                         _running_pct = min(99, int((_elapsed / (_est_h * 3600)) * 100))
-                        status_str = f"⏳ running {_running_pct}%"
+                        # 避免长时间卡在 99%
+                        if _running_pct >= 99 and _elapsed > (_est_h * 3600):
+                            # 如果实际时间已经超过预计时间，让它停在 99% 但加个提示，或者干脆不显示百分比
+                            status_str = f"⏳ running (已超时)"
+                        else:
+                            status_str = f"⏳ running {_running_pct}%"
                     else:
                         _running_pct = None
                         status_str = "⏳ running"
@@ -716,7 +721,10 @@ def _build_stage_status_text(
             lines.append(f"{display_idx}、{label}：0%（未开始，预计耗时：约{est}小时）")
         else:
             suffix = f"预计耗时：约{est}小时" if running else "已中断"
-            lines.append(f"{display_idx}、{label}：{pct}%（{suffix}）")
+            if pct == 99 and running:
+                lines.append(f"{display_idx}、{label}：{pct}%（{suffix} - 可能已超时，请耐心等待）")
+            else:
+                lines.append(f"{display_idx}、{label}：{pct}%（{suffix}）")
     return "\n".join(lines)
 
 
@@ -767,12 +775,19 @@ def _run_pipeline_async(session_key: str, state: SessionState) -> None:
     outdir_path = Path(outdir)
     progress_file = outdir_path / "bwa_index_progress.json"
     records_file = outdir_path / "pipeline_node_records.json"
-    
-    # 清除历史进度记录，防止“重新运行”时读取到上一轮100%的假象
-    if progress_file.exists():
-        progress_file.unlink(missing_ok=True)
+
+    # 从历史记录中提取真实的开始时间，以便断点续跑时总耗时计算准确
+    start_ts = time.time()
     if records_file.exists():
-        records_file.unlink(missing_ok=True)
+        try:
+            records = json.loads(records_file.read_text(encoding="utf-8"))
+            if "started_at" in records:
+                t0 = datetime.fromisoformat(records["started_at"].replace("Z", "+00:00"))
+                if t0.tzinfo is None:
+                    t0 = t0.replace(tzinfo=timezone.utc)
+                start_ts = t0.timestamp()
+        except Exception:
+            pass
 
     _load_stage_progress(outdir_path, 0)  # 仅用于后续轮询判断，初始消息用节点看板
     start_msg = (
@@ -781,7 +796,7 @@ def _run_pipeline_async(session_key: str, state: SessionState) -> None:
         f"FASTQ2: {env['FASTQ2_PATH'] or '未设置(单端)'}\n"
         f"REF: {env['REF_PATH']}\n"
         f"OUTDIR: {env['OUTDIR_PATH']}\n\n"
-        + _build_node_board_text(outdir_path, time.time())
+        + _build_node_board_text(outdir_path, start_ts)
     )
     _send_dingtalk_text(chat_info, start_msg)
 
@@ -797,7 +812,6 @@ def _run_pipeline_async(session_key: str, state: SessionState) -> None:
                 stderr=err_fp,
                 text=True,
             )
-            start_ts = time.time()
             last_sent_prog = 0
             last_reported_stages_hash = ""
             last_node_name = ""
@@ -993,6 +1007,25 @@ def _handle_message_impl(payload: Dict[str, Any]) -> None:
                 chat_info,
                 "收到。如需运行生信流程，请发送包含「帮我运行」或「FASTQ」「ref」等关键词的指令。",
             )
+        return
+
+    if "进度" in text or "状态" in text:
+        outdir = str(ROOT_DIR / "test_data" / "out_dingtalk")
+        outdir_path = Path(outdir)
+        records_file = outdir_path / "pipeline_node_records.json"
+        start_ts = time.time()
+        if records_file.exists():
+            try:
+                records = json.loads(records_file.read_text(encoding="utf-8"))
+                if "started_at" in records:
+                    t0 = datetime.fromisoformat(records["started_at"].replace("Z", "+00:00"))
+                    if t0.tzinfo is None:
+                        t0 = t0.replace(tzinfo=timezone.utc)
+                    start_ts = t0.timestamp()
+            except Exception:
+                pass
+        panel = _build_node_board_text(outdir_path, start_ts)
+        _send_dingtalk_text(chat_info, panel)
         return
 
     session_key = _safe_session_key(payload)
