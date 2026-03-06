@@ -44,7 +44,13 @@ KEYWORDS = [
 ]
 # 某节点运行超过此时长后，每间隔此时长推送一次进度（秒）
 LONG_RUNNING_PUSH_INTERVAL_SEC = 600  # 10 分钟
+# 若某节点持续处于 running 超过此时长，在推送时附加「可能已异常退出」提示（秒）
+STALE_RUNNING_WARN_THRESHOLD_SEC = 7200  # 2 小时
+# 若 running 节点超过此时长无 progress_updated_at 更新，视为「疑似已停滞」（秒）
+STALE_PROGRESS_NO_UPDATE_SEC = 300  # 5 分钟
 LOG_ALL_TOPICS = os.getenv("DINGTALK_STREAM_LOG_ALL_TOPICS", "1").strip() not in {"0", "false", "False"}
+# run_bio_payload.sh 中未设置 KNOWN_SITES_PATH 时使用的默认路径，回复钉钉时需展示具体路径
+DEFAULT_KNOWN_SITES_PATH = str(ROOT_DIR / "dbsnp" / "dbsnp_hg38.vcf.gz")
 
 
 @dataclass
@@ -53,6 +59,7 @@ class SessionState:
     fastq2: Optional[str] = None
     ref: Optional[str] = None
     outdir: Optional[str] = None
+    gnomad: Optional[str] = None
     last_text: Optional[str] = None
     updated_at: float = field(default_factory=time.time)
     chat_info: Dict[str, Any] = field(default_factory=dict)
@@ -77,9 +84,19 @@ def _safe_session_key(payload: Dict[str, Any]) -> str:
 
 def _normalize_text(payload: Dict[str, Any]) -> str:
     text = ""
-    # Common chatbot payload shape.
+    # Common chatbot payload shape: text.content 可能为字符串或分段数组
     if isinstance(payload.get("text"), dict):
-        text = str(payload["text"].get("content") or "")
+        content = payload["text"].get("content")
+        if isinstance(content, list):
+            parts = []
+            for seg in content:
+                if isinstance(seg, dict) and "text" in seg:
+                    parts.append(str(seg["text"]))
+                else:
+                    parts.append(str(seg))
+            text = " ".join(parts)
+        else:
+            text = str(content or "")
     # Some stream callbacks may nest message body.
     if not text and isinstance(payload.get("message"), dict):
         message = payload.get("message") or {}
@@ -88,7 +105,11 @@ def _normalize_text(payload: Dict[str, Any]) -> str:
         if not text:
             text = str(message.get("content") or message.get("msg") or "")
     if not text:
-        text = str(payload.get("content") or payload.get("msg") or payload.get("message") or "")
+        raw = payload.get("content") or payload.get("msg") or payload.get("message")
+        if isinstance(raw, list):
+            text = " ".join(str(x) for x in raw)
+        else:
+            text = str(raw or "")
     return text.strip()
 
 
@@ -97,22 +118,29 @@ def _contains_keyword(text: str) -> bool:
     return any(kw.lower() in lower for kw in KEYWORDS)
 
 
-def _extract_paths(text: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
-    # 支持 = 、 := 、 ：、 全角＝；FASTQ1/FASTQ2 与 fastq/fastq1 均匹配（IGNORECASE）
+def _extract_paths(text: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
+    # 支持 = 、 := 、 ：、 全角＝；FASTQ/FASTQ1/fastq/fastq1 及 FASTQ2/fastq2 均兼容，大小写不敏感
     _eq = r"\s*[:=：＝]\s*"
     patterns = {
-        "fastq": rf"(?:fastq1?)\s*{_eq}([^\s]+)",
+        "fastq": rf"(?:fastq1|fastq)\s*{_eq}([^\s]+)",
         "fastq2": rf"(?:fastq2)\s*{_eq}([^\s]+)",
         "ref": rf"(?:ref|reference|参考(?:基因组)?)\s*{_eq}([^\s]+)",
         "outdir": rf"(?:outdir|output|输出目录)\s*{_eq}([^\s]+)",
+        "gnomad": rf"(?:gnomad)\s*{_eq}([^\s]+)",
     }
     fastq = None
     fastq2 = None
     ref = None
     outdir = None
+    gnomad = None
     m = re.search(patterns["fastq"], text, flags=re.IGNORECASE)
     if m:
         fastq = m.group(1).strip()
+    # 兜底：兼容 FASTQ= 或 fastq= 紧挨等号、全角等号等
+    if not fastq:
+        m = re.search(r"(?i)(?:fastq1|fastq)\s*[=:=：＝]\s*(\S+)", text)
+        if m:
+            fastq = m.group(1).strip()
     m = re.search(patterns["fastq2"], text, flags=re.IGNORECASE)
     if m:
         fastq2 = m.group(1).strip()
@@ -122,7 +150,41 @@ def _extract_paths(text: str) -> Tuple[Optional[str], Optional[str], Optional[st
     m = re.search(patterns["outdir"], text, flags=re.IGNORECASE)
     if m:
         outdir = m.group(1).strip()
-    return fastq, fastq2, ref, outdir
+    m = re.search(patterns["gnomad"], text, flags=re.IGNORECASE)
+    if m:
+        gnomad = m.group(1).strip()
+    return fastq, fastq2, ref, outdir, gnomad
+
+
+def _default_outdir_from_fastq(fastq: str) -> str:
+    """根据 fastq 路径得到默认输出目录：fastq 所在目录下的 out 文件夹（绝对路径）。"""
+    return str(Path(fastq).resolve().parent / "out")
+
+
+def _default_ref_from_fastq(fastq: str) -> str:
+    """未指定 ref 时：默认路径为与 fastq 上一级目录同级的 refer_hg/hg38/hg38.fa。"""
+    base = Path(fastq).resolve().parent.parent  # fastq 的上一级目录
+    return str(base / "refer_hg" / "hg38" / "hg38.fa")
+
+
+def _default_gnomad_from_fastq(fastq: str) -> str:
+    """未指定 gnomad 时：默认路径为 fastq 文件的上一级目录同级文件夹 gnomad/gnomad.exomes.r2.1.1.sites.vcf.bgz"""
+    base = Path(fastq).resolve().parent.parent
+    return str(base / "gnomad" / "gnomad.exomes.r2.1.1.sites.vcf.bgz")
+
+def _default_dbsnp_from_fastq(fastq: str) -> Optional[str]:
+    """
+    当未指定 dbsnp 时：默认目录为 fastq 文件上一级目录的同级 dbsnp 目录；
+    文件名优先 dbsnp_hg38_chr.vcf.gz，若不存在则用 dbsnp_hg38.vcf.gz。
+    若两个都不存在则返回 None，由 run_bio_payload 使用其默认。
+    """
+    base = Path(fastq).resolve().parent.parent  # fastq 的上一级目录
+    dbsnp_dir = base / "dbsnp"
+    for name in ("dbsnp_hg38_chr.vcf.gz", "dbsnp_hg38.vcf.gz"):
+        p = dbsnp_dir / name
+        if p.exists():
+            return str(p)
+    return None
 
 
 def _should_run(text: str) -> bool:
@@ -432,6 +494,18 @@ def _build_node_board_text(outdir_path: Path, total_started_at: float) -> str:
                         _running_pct = None
                         status_str = "⏳ running"
                 est_str = _node_estimate_str(name, fastq_total_bytes)
+                # 根据 progress_updated_at 判断该 running 节点是否疑似已停滞（无进度更新）
+                progress_updated_at = node.get("progress_updated_at")
+                if progress_updated_at:
+                    try:
+                        t_updated = datetime.fromisoformat(str(progress_updated_at).replace("Z", "+00:00"))
+                        if t_updated.tzinfo is None:
+                            t_updated = t_updated.replace(tzinfo=timezone.utc)
+                        sec_since = (datetime.now(timezone.utc) - t_updated).total_seconds()
+                        if sec_since > STALE_PROGRESS_NO_UPDATE_SEC:
+                            status_str += " (可能已停滞)"
+                    except (ValueError, TypeError):
+                        pass
             else:
                 status_str = "❌ fail"
                 est_str = "-"
@@ -762,17 +836,30 @@ def _run_pipeline_async(session_key: str, state: SessionState) -> None:
     ts = time.strftime("%Y%m%d_%H%M%S")
     payload_path = RUNTIME_DIR / f"{session_key}_{ts}_payload.json"
     result_path = RUNTIME_DIR / f"{session_key}_{ts}_result.json"
-    outdir = state.outdir or str(ROOT_DIR / "test_data" / "out_dingtalk")
+    # 未指定 outdir 时：输出目录 = fastq 同目录下的 out
+    outdir = state.outdir or _default_outdir_from_fastq(state.fastq)
+    outdir = str(Path(outdir).resolve())
     chat_info = state.chat_info
 
+    # 未指定 ref 时：与 fastq 上一级目录同级的 refer_hg/hg38/hg38.fa
+    ref_path = state.ref or _default_ref_from_fastq(state.fastq)
     env = os.environ.copy()
     env["FASTQ_PATH"] = state.fastq or ""
     env["FASTQ2_PATH"] = state.fastq2 or ""
-    env["REF_PATH"] = state.ref or ""
+    env["REF_PATH"] = ref_path
     env["OUTDIR_PATH"] = outdir
+    # 未指定 dbsnp 时：fastq 上一级同级 dbsnp 目录，自动选择 dbsnp_hg38_chr.vcf.gz 或 dbsnp_hg38.vcf.gz
+    known_sites = _default_dbsnp_from_fastq(state.fastq)
+    if known_sites:
+        env["KNOWN_SITES_PATH"] = known_sites
+        
+    gnomad_path = state.gnomad or _default_gnomad_from_fastq(state.fastq)
+    env["GNOMAD_PATH"] = gnomad_path
+
+    outdir_path = Path(outdir)
+    outdir_path.mkdir(parents=True, exist_ok=True)
 
     cmd = [str(RUN_SCRIPT), str(payload_path), str(result_path)]
-    outdir_path = Path(outdir)
     progress_file = outdir_path / "bwa_index_progress.json"
     records_file = outdir_path / "pipeline_node_records.json"
 
@@ -790,12 +877,16 @@ def _run_pipeline_async(session_key: str, state: SessionState) -> None:
             pass
 
     _load_stage_progress(outdir_path, 0)  # 仅用于后续轮询判断，初始消息用节点看板
+    # 回复中必须包含 ref、outdir、dbsnp、gnomad 的具体路径
+    dbsnp_resolved = env.get("KNOWN_SITES_PATH") or DEFAULT_KNOWN_SITES_PATH
     start_msg = (
         "已开始执行生信流程。\n"
-        f"FASTQ: {env['FASTQ_PATH']}\n"
-        f"FASTQ2: {env['FASTQ2_PATH'] or '未设置(单端)'}\n"
         f"REF: {env['REF_PATH']}\n"
-        f"OUTDIR: {env['OUTDIR_PATH']}\n\n"
+        f"OUTDIR: {env['OUTDIR_PATH']}\n"
+        f"dbSNP: {dbsnp_resolved}\n"
+        f"gnomAD: {env['GNOMAD_PATH']}\n"
+        f"FASTQ: {env['FASTQ_PATH']}\n"
+        f"FASTQ2: {env['FASTQ2_PATH'] or '未设置(单端)'}\n\n"
         + _build_node_board_text(outdir_path, start_ts)
     )
     _send_dingtalk_text(chat_info, start_msg)
@@ -886,6 +977,18 @@ def _run_pipeline_async(session_key: str, state: SessionState) -> None:
                     # 避免在完全没有开始时推送空状态
                     if not (stage_progress.get(2, 0) == 0 and sum(stage_progress.values()) == 0):
                         panel = _build_node_board_text(outdir_path, start_ts)
+                        # 若最后一节点长期处于 running 且无进度变化，提示可能已异常退出（流程实际未在跑但 curl 未返回，桥会持续每 10 分钟推送）
+                        if (
+                            node_elapsed_sec >= STALE_RUNNING_WARN_THRESHOLD_SEC
+                            and isinstance(nodes, list)
+                            and len(nodes) > 0
+                            and isinstance(nodes[-1], dict)
+                            and nodes[-1].get("status") == "running"
+                        ):
+                            panel += (
+                                "\n\n⚠️ 该节点已连续运行超过 2 小时，若流程实际未在跑，可能是网关侧已异常退出、"
+                                "桥接子进程仍在等 curl 返回。请检查：1) 网关与 li/out 日志 2) 可重启钉钉桥以结束本轮轮询。"
+                            )
                         _send_dingtalk_text(chat_info, panel)
                         last_reported_stages_hash = other_stages_hash
                         if bwa_prog >= last_sent_prog + 5:
@@ -1009,9 +1112,15 @@ def _handle_message_impl(payload: Dict[str, Any]) -> None:
             )
         return
 
+    session_key = _safe_session_key(payload)
+    state = SESSIONS.get(session_key) or SessionState()
+
     if "进度" in text or "状态" in text:
-        outdir = str(ROOT_DIR / "test_data" / "out_dingtalk")
-        outdir_path = Path(outdir)
+        # 优先使用当前会话的 outdir（或由 fastq 推导的 out），否则回退到默认
+        outdir = state.outdir or (_default_outdir_from_fastq(state.fastq) if state.fastq else None)
+        if not outdir:
+            outdir = str(ROOT_DIR / "test_data" / "out_dingtalk")
+        outdir_path = Path(outdir).resolve()
         records_file = outdir_path / "pipeline_node_records.json"
         start_ts = time.time()
         if records_file.exists():
@@ -1025,57 +1134,100 @@ def _handle_message_impl(payload: Dict[str, Any]) -> None:
             except Exception:
                 pass
         panel = _build_node_board_text(outdir_path, start_ts)
-        _send_dingtalk_text(chat_info, panel)
+        # 若最后一节点长期 running，提示可能已异常退出
+        records = _load_json(records_file)
+        nodes = records.get("nodes") if isinstance(records, dict) else []
+        node_elapsed_sec = 0.0
+        if isinstance(nodes, list) and len(nodes) > 0 and isinstance(nodes[-1], dict):
+            n = nodes[-1]
+            if n.get("status") == "running" and n.get("started_at"):
+                try:
+                    t0 = datetime.fromisoformat(str(n["started_at"]).replace("Z", "+00:00"))
+                    if t0.tzinfo is None:
+                        t0 = t0.replace(tzinfo=timezone.utc)
+                    node_elapsed_sec = max(0.0, (datetime.now(timezone.utc) - t0).total_seconds())
+                except (ValueError, TypeError):
+                    pass
+        if node_elapsed_sec >= STALE_RUNNING_WARN_THRESHOLD_SEC:
+            panel += (
+                "\n\n⚠️ 该节点已连续运行超过 2 小时，若流程实际未在跑，可能是网关侧已异常退出、"
+                "桥接子进程仍在等 curl 返回。请检查：1) 网关与 li/out 日志 2) 可重启钉钉桥以结束本轮轮询。"
+            )
+        hint = f"（OUTDIR: {outdir_path}）\n\n" if state.fastq or state.outdir else ""
+        _send_dingtalk_text(chat_info, hint + panel)
         return
 
-    session_key = _safe_session_key(payload)
-    state = SESSIONS.get(session_key) or SessionState()
     state.last_text = text
     state.updated_at = time.time()
     state.chat_info = chat_info
 
-    fastq, fastq2, ref, outdir = _extract_paths(text)
+    fastq, fastq2, ref, outdir, gnomad = _extract_paths(text)
     if fastq:
-        state.fastq = fastq
+        state.fastq = str(Path(fastq).resolve())
     if fastq2:
-        state.fastq2 = fastq2
+        state.fastq2 = str(Path(fastq2).resolve())
     if ref:
         state.ref = ref
     if outdir:
         state.outdir = outdir
+    if gnomad:
+        state.gnomad = gnomad
     SESSIONS[session_key] = state
 
     if not _should_run(text):
+        # 回复中必须包含 ref、outdir、dbsnp 的具体路径（未指定时用默认路径）
+        effective_outdir = (state.outdir or _default_outdir_from_fastq(state.fastq)) if state.fastq else (state.outdir or "未设置")
+        effective_ref = (state.ref or _default_ref_from_fastq(state.fastq)) if state.fastq else (state.ref or "未设置")
+        effective_dbsnp = _default_dbsnp_from_fastq(state.fastq) if state.fastq else None
+        effective_gnomad = (state.gnomad or _default_gnomad_from_fastq(state.fastq)) if state.fastq else (state.gnomad or "未设置")
+        
+        dbsnp_path = effective_dbsnp if effective_dbsnp else DEFAULT_KNOWN_SITES_PATH
+        ref_hint = "（未指定，使用默认）" if not state.ref and state.fastq else ""
+        outdir_hint = "（未指定，使用默认）" if not state.outdir and state.fastq else ""
+        dbsnp_hint = "（未指定，使用脚本默认）" if not effective_dbsnp and state.fastq else ""
+        gnomad_hint = "（未指定，使用默认）" if not state.gnomad and state.fastq else ""
         msg = (
             "参数已记录。\n"
             f"FASTQ: {state.fastq or '未设置'}\n"
             f"FASTQ2: {state.fastq2 or '未设置(单端)'}\n"
-            f"REF: {state.ref or '未设置'}\n"
-            f"OUTDIR: {state.outdir or str(ROOT_DIR / 'test_data' / 'out_dingtalk')}\n"
+            f"REF: {effective_ref}{ref_hint}\n"
+            f"OUTDIR: {effective_outdir}{outdir_hint}\n"
+            f"dbSNP: {dbsnp_path}{dbsnp_hint}\n"
+            f"gnomAD: {effective_gnomad}{gnomad_hint}\n"
             "发送“帮我运行”即可开始。"
         )
         _send_dingtalk_text(chat_info, msg)
         return
 
-    if not state.fastq or not state.ref:
-        _send_dingtalk_text(chat_info, "缺少参数。请先发送 fastq=... 和 ref=...，再发送“帮我运行”。")
+    if not state.fastq:
+        _send_dingtalk_text(chat_info, "缺少参数。请先发送 fastq=...（及可选 fastq2=...），再发送“帮我运行”。")
         return
+    ref_path = state.ref or _default_ref_from_fastq(state.fastq)
     if not Path(state.fastq).exists():
         _send_dingtalk_text(chat_info, f"FASTQ 路径不存在：{state.fastq}")
         return
     if state.fastq2 and not Path(state.fastq2).exists():
         _send_dingtalk_text(chat_info, f"FASTQ2 路径不存在：{state.fastq2}")
         return
-    if not Path(state.ref).exists():
-        _send_dingtalk_text(chat_info, f"参考基因组路径不存在：{state.ref}")
+    if not Path(ref_path).exists():
+        _send_dingtalk_text(chat_info, f"参考基因组路径不存在：{ref_path}")
         return
     if not RUN_SCRIPT.exists():
         _send_dingtalk_text(chat_info, f"执行脚本不存在：{RUN_SCRIPT}")
         return
 
+    # 即时回复中包含 ref、outdir、dbsnp 的具体路径
+    outdir_resolved = state.outdir or _default_outdir_from_fastq(state.fastq)
+    dbsnp_resolved = _default_dbsnp_from_fastq(state.fastq) or DEFAULT_KNOWN_SITES_PATH
+    immediate_msg = (
+        "已接收运行请求，任务开始执行。稍后会回传结果。\n\n"
+        f"REF: {ref_path}\n"
+        f"OUTDIR: {outdir_resolved}\n"
+        f"dbSNP: {dbsnp_resolved}"
+    )
     thread = threading.Thread(target=_run_pipeline_async, args=(session_key, state), daemon=True)
     thread.start()
-    _send_dingtalk_text(chat_info, "已接收运行请求，任务开始执行。稍后会回传结果。")
+    _send_dingtalk_text(chat_info, immediate_msg)
 
 
 class BioChatbotHandler(dingtalk_stream.ChatbotHandler):

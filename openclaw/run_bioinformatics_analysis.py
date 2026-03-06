@@ -71,6 +71,7 @@ class NodeRecorder:
             "name": name,
             "status": "running",
             "started_at": _now_iso(),
+            "progress_updated_at": _now_iso(),  # 启动时即写入，供桥接判断是否在运行
             "_t0": time.time(),
             "inputs": inputs or {},
             "outputs": {},
@@ -121,6 +122,7 @@ class NodeRecorder:
         # 假设最后一个节点是当前正在运行的节点
         current_node = self.nodes[-1]
         current_node["progress"] = progress
+        current_node["progress_updated_at"] = _now_iso()  # 供桥接判断该节点是否仍在活跃运行
         self.write(status)
 
     def write_progress_bytes(self, progress_bytes: int, total_bytes: int) -> None:
@@ -132,6 +134,7 @@ class NodeRecorder:
         current_node["progress_bytes"] = min(progress_bytes, total_bytes)
         pct = min(99, int(100 * current_node["progress_bytes"] / total_bytes))
         current_node["progress"] = pct
+        current_node["progress_updated_at"] = _now_iso()  # 供桥接判断该节点是否仍在活跃运行
         self.write("running")
 
     def record_command(self, node: Dict[str, Any], cmd: List[str], elapsed_ms: int) -> None:
@@ -881,6 +884,76 @@ def _pick_snp_name(record_id: str, info_map: Dict[str, str], chrom: str, pos: st
     return f"{chrom}:{pos}:{ref}>{alt}"
 
 
+def _filter_by_gnomad(in_vcf: Path, gnomad_vcf: Path, out_vcf: Path, max_af: float = 0.01) -> Dict[str, int]:
+    import pysam
+    
+    def _get_vcf_chrom(vcf_obj, chrom):
+        if not vcf_obj: return chrom
+        if chrom in vcf_obj.header.contigs:
+            return chrom
+        if chrom.startswith("chr"):
+            alt = chrom[3:]
+            if alt in vcf_obj.header.contigs:
+                return alt
+        else:
+            alt = "chr" + chrom
+            if alt in vcf_obj.header.contigs:
+                return alt
+        return chrom
+
+    total_variants = 0
+    passed_variants = 0
+    
+    try:
+        gnomad = pysam.VariantFile(str(gnomad_vcf))
+    except Exception as e:
+        print(f"[WARN] Could not open gnomAD VCF {gnomad_vcf}: {e}. Copying input to output.")
+        import shutil
+        shutil.copy2(in_vcf, out_vcf)
+        return {"total": 0, "passed": 0}
+
+    with pysam.VariantFile(str(in_vcf)) as vin:
+        with pysam.VariantFile(str(out_vcf), "w", header=vin.header) as vout:
+            for rec in vin:
+                total_variants += 1
+                
+                gnomad_chrom = _get_vcf_chrom(gnomad, rec.chrom)
+                is_common = False
+                
+                try:
+                    for g_rec in gnomad.fetch(gnomad_chrom, rec.pos - 1, rec.pos):
+                        if g_rec.pos == rec.pos and g_rec.ref == rec.ref:
+                            # Check if alt matches any
+                            for alt in rec.alts or []:
+                                if alt in g_rec.alts:
+                                    # Get AF
+                                    af = 0.0
+                                    if "AF" in g_rec.info:
+                                        af_val = g_rec.info["AF"]
+                                        if isinstance(af_val, (tuple, list)):
+                                            # Find index of alt
+                                            idx = list(g_rec.alts).index(alt)
+                                            if idx < len(af_val):
+                                                af = float(af_val[idx])
+                                        else:
+                                            af = float(af_val)
+                                            
+                                    if af > max_af:
+                                        is_common = True
+                                        break
+                        if is_common:
+                            break
+                except ValueError:
+                    # Contig not found in gnomad, skip filtering
+                    pass
+                    
+                if not is_common:
+                    vout.write(rec)
+                    passed_variants += 1
+
+    gnomad.close()
+    return {"total": total_variants, "passed": passed_variants}
+
 def _vcf_to_csv(vcf_path: Path, csv_path: Path, clinvar_path: Optional[Path] = None, dbsnp_path: Optional[Path] = None) -> Dict[str, Any]:
     import csv
     
@@ -973,7 +1046,7 @@ def _vcf_to_csv(vcf_path: Path, csv_path: Path, clinvar_path: Optional[Path] = N
                     "alt": alt,
                     "qual": float(qual) if qual not in {".", ""} else 0.0,
                     "dp": int(dp) if dp.isdigit() else 0,
-                    "af": float(af) if af else 0.0,
+                    "af": float(af.split(",")[0]) if af and af.split(",")[0] != "." else 0.0,
                     "clinvar_sig": clinvar_sig,
                     "clinvar_disease": clinvar_disease,
                 }
@@ -1010,6 +1083,101 @@ def _vcf_to_csv(vcf_path: Path, csv_path: Path, clinvar_path: Optional[Path] = N
     return {"rows": len(rows)}
 
 
+
+DISEASE_TRANSLATIONS = {
+    "Catecholaminergic polymorphic ventricular tachycardia 1": "儿茶酚胺敏感性多形性室性心动过速1型",
+    "Catecholaminergic polymorphic ventricular tachycardia": "儿茶酚胺敏感性多形性室性心动过速",
+    "Retinal dystrophy": "视网膜营养不良",
+    "Congenital myasthenic syndrome 8": "先天性肌无力综合征8型",
+    "Autosomal recessive spastic paraplegia type 78": "常染色体隐性遗传痉挛性截瘫78型",
+    "Kufor-Rakeb syndrome": "Kufor-Rakeb综合征 (帕金森综合征9型)",
+    "Inborn genetic diseases": "先天性遗传病",
+    "Carnitine palmitoyl transferase II deficiency": "肉碱棕榈酰转移酶II缺乏症",
+    "severe infantile form": "严重婴儿型",
+    "myopathic form": "肌病型",
+    "neonatal form": "新生儿型",
+    "Encephalopathy": "脑病",
+    "acute": "急性",
+    "infection-induced": "感染诱发",
+    "susceptibility to": "易感性",
+    "Hypercholesterolemia": "高胆固醇血症",
+    "autosomal dominant": "常染色体显性",
+    "Familial hypercholesterolemia": "家族性高胆固醇血症",
+    "Cardiovascular phenotype": "心血管表型",
+    "PGM1-congenital disorder of glycosylation": "PGM1相关先天性糖基化障碍",
+    "Schneckenbecken dysplasia": "蜗牛骨盆发育不良",
+    "C3 glomerulonephritis": "C3肾小球肾炎",
+    "Idiopathic generalized epilepsy": "特发性全面性癫痫",
+    "Left ventricular noncompaction 8": "左心室心肌致密化不全8型",
+    "Peroxisome biogenesis disorder": "过氧化物酶体生物发生障碍",
+    "complementation group K": "互补组K",
+    "Homocystinuria due to methylene tetrahydrofolate reductase deficiency": "亚甲基四氢叶酸还原酶缺乏所致同型半胱氨酸尿症",
+    "Early-infantile DEE": "早期婴儿发育性癫痫性脑病",
+    "Atrial fibrillation": "心房颤动",
+    "familial": "家族性",
+    "Atrial standstill 1": "心房静止1型",
+    "VPS45-related disorder": "VPS45相关疾病",
+    "Congenital neutropenia-myelofibrosis-nephromegaly syndrome": "先天性中性粒细胞减少-骨髓纤维化-肾肿大综合征",
+    "Familial hemiplegic migraine": "家族性偏瘫性偏头痛",
+    "not provided": "未提供",
+    "not specified": "未指定",
+    "Familial": "家族性",
+    "Transient Neonatal": "短暂性新生儿",
+    "Leucine-Induced Hypoglycemia": "亮氨酸诱导的低血糖",
+    "Hyperinsulinemic Hypoglycemia": "高胰岛素性低血糖",
+    "Autosomal Dominant": "常染色体显性",
+    "Susceptibility To": "易感性",
+    "Diabetes Mellitus": "糖尿病",
+    "Primary": "原发性",
+    "Autosomal Recessive": "常染色体隐性",
+    "Not Specified": "未指定",
+    "Not Provided": "未提供",
+    "Generalized Pustular Psoriasis": "泛发性脓疱型银屑病",
+    "Acrodermatitis Continua Suppurativa Of Hallopeau": "连续性肢端皮炎",
+    "Myofibrillar": "肌原纤维",
+    "Maple Syrup Urine Disease": "枫糖尿病",
+    "Type 2": "2型",
+    "Unclassifiable": "无法分类",
+    "Cdh23-Related Disorder": "CDH23相关疾病",
+    "Pituitary Adenoma 5": "垂体腺瘤5型",
+    "Permanent Neonatal 3": "永久性新生儿3型",
+    "Erythropoietic": "红细胞生成性"
+}
+
+def _translate_disease(disease_str: str) -> str:
+    if not disease_str or disease_str == "Unknown":
+        return "未知(Unknown)"
+        
+    # Replace underscores with spaces for better matching
+    disease_str = disease_str.replace("_", " ")
+    parts = disease_str.split('|')
+    translated_parts = []
+    
+    for part in parts:
+        part = part.strip()
+        found = False
+        for eng, zh in DISEASE_TRANSLATIONS.items():
+            if eng.lower() == part.lower():
+                translated_parts.append(f"{zh}({part})")
+                found = True
+                break
+        
+        if not found:
+            import re
+            translated_part = part
+            for eng, zh in DISEASE_TRANSLATIONS.items():
+                if eng.lower() in ["not provided", "not specified"]:
+                    continue
+                translated_part = re.sub(re.escape(eng), zh, translated_part, flags=re.IGNORECASE)
+                    
+            if translated_part != part:
+                translated_parts.append(f"{translated_part}({part})")
+            else:
+                # Capitalize the first letter of each word if not translated
+                translated_parts.append(part.title())
+            
+    return " | ".join(translated_parts)
+
 def _predict_disease(csv_path: Path) -> Dict[str, Any]:
     import csv
 
@@ -1031,9 +1199,9 @@ def _predict_disease(csv_path: Path) -> Dict[str, Any]:
             sig = (row.get("clinvar_sig") or "").lower()
             if "pathogenic" in sig and "benign" not in sig:
                 pathogenic_variants.append({
-                    "snp": row.get("snp_name"),
-                    "disease": row.get("clinvar_disease", "Unknown"),
-                    "sig": row.get("clinvar_sig")
+                    "变异位点(snp)": row.get("snp_name"),
+                    "相关疾病(disease)": _translate_disease(row.get("clinvar_disease", "Unknown")),
+                    "临床显著性(sig)": row.get("clinvar_sig")
                 })
 
     mean_af = (af_sum / variant_count) if variant_count else 0.0
@@ -1042,19 +1210,23 @@ def _predict_disease(csv_path: Path) -> Dict[str, Any]:
     if pathogenic_variants:
         disease_scores = {}
         for pv in pathogenic_variants:
-            diseases = [d.strip() for d in pv["disease"].split(",") if d.strip() and d.strip().lower() not in ("not_specified", "not_provided", "unknown")]
+            # Extract English disease name from "Chinese(English)" or just "English"
+            raw_disease = pv["相关疾病(disease)"]
+            # We can just use the raw disease string for counting, but we should strip the Chinese part if we want to group properly.
+            # Actually, since we already translated it, we can just use the translated string for grouping.
+            diseases = [d.strip() for d in raw_disease.split("|") if d.strip() and "not provided" not in d.lower() and "not specified" not in d.lower() and "unknown" not in d.lower()]
             for d in diseases:
                 disease_scores[d] = disease_scores.get(d, 0) + 1
         
         predictions = []
         for d, count in sorted(disease_scores.items(), key=lambda x: x[1], reverse=True):
             score = min(0.99, 0.8 + count * 0.05)
-            predictions.append({"disease": d.replace("_", " ").title(), "score": round(score, 3)})
+            predictions.append({"预测疾病名称(disease)": d, "预测得分(score)": round(score, 3)})
             
         if not predictions:
             # Fallback if diseases were all not_specified
             base = min(0.95, 0.15 + 0.55 * mean_af + 0.3 * (high_risk_count / max(1, variant_count)))
-            predictions = [{"disease": "Genetic Risk Identified (Disease Not Specified in ClinVar)", "score": round(base, 3)}]
+            predictions = [{"预测疾病名称(disease)": "发现遗传风险但ClinVar未指定疾病(Genetic Risk Identified - Disease Not Specified in ClinVar)", "预测得分(score)": round(base, 3)}]
             
         overall_score = round(min(100, 70 + len(pathogenic_variants) * 5), 1)
         level = "high"
@@ -1066,16 +1238,16 @@ def _predict_disease(csv_path: Path) -> Dict[str, Any]:
         level = "low"
 
     # 按分数从高到低排序
-    predictions.sort(key=lambda x: x["score"], reverse=True)
+    predictions.sort(key=lambda x: x["预测得分(score)"], reverse=True)
 
     return {
-        "overall_risk_level": level,
-        "overall_score": round(base, 3),
-        "variant_count": variant_count,
-        "high_risk_variant_count": high_risk_count,
-        "mean_af": round(mean_af, 4),
-        "predictions": predictions,
-        "pathogenic_variants": pathogenic_variants
+        "整体风险等级(overall_risk_level)": "高风险(high)" if level == "high" else "低风险(low)",
+        "整体风险评分(overall_score)": round(base, 3),
+        "分析变异总数(variant_count)": variant_count,
+        "高风险变异数(high_risk_variant_count)": high_risk_count,
+        "平均等位基因频率(mean_af)": round(mean_af, 4),
+        "疾病预测列表(predictions)": predictions,
+        "致病性变异详情(pathogenic_variants)": pathogenic_variants
     }
 
 
@@ -1092,50 +1264,50 @@ def _write_report(
     filter_method: str = "GATK VariantFiltration (hard-filter)",
 ) -> None:
     lines = [
-        "# Disease Association Report",
+        "# 疾病关联分析报告 (Disease Association Report)",
         "",
-        "## Inputs",
+        "## 输入文件 (Inputs)",
         f"- FASTQ R1: `{fastq1}`",
-        f"- FASTQ R2: `{fastq2}`" if fastq2 else "- FASTQ R2: `N/A (single-end)`",
-        f"- Reference: `{ref_fa}`",
+        f"- FASTQ R2: `{fastq2}`" if fastq2 else "- FASTQ R2: `N/A (单端/single-end)`",
+        f"- 参考基因组 (Reference): `{ref_fa}`",
         "",
-        "## Pipeline",
-        "- FASTQ QC + trimming: fastp",
-        "- Alignment: BWA-MEM",
-        "- BAM processing: samtools sort/index + GATK MarkDuplicates",
-        "- Variant calling: GATK HaplotypeCaller",
-        f"- Variant filtering: {filter_method}",
+        "## 分析流程 (Pipeline)",
+        "- 质控与过滤 (FASTQ QC + trimming): fastp",
+        "- 序列比对 (Alignment): BWA-MEM",
+        "- BAM处理 (BAM processing): samtools sort/index + GATK MarkDuplicates",
+        "- 变异检测 (Variant calling): GATK HaplotypeCaller",
+        f"- 变异过滤 (Variant filtering): {filter_method}",
         "",
-        "## Outputs",
+        "## 输出文件 (Outputs)",
         f"- BAM: `{bam_path}`",
         f"- VCF: `{vcf_path}`",
         f"- CSV: `{csv_path}`",
-        f"- Variants: `{variants}`",
+        f"- 有效变异数 (Variants): `{variants}`",
         "",
-        "## Disease Prediction",
-        f"- Overall risk level: `{prediction['overall_risk_level']}`",
-        f"- Overall score: `{prediction['overall_score']}`",
-        f"- Mean AF: `{prediction['mean_af']}`",
-        f"- High-risk variants: `{prediction['high_risk_variant_count']}` / `{prediction['variant_count']}`",
+        "## 疾病预测结果 (Disease Prediction)",
+        f"- 整体风险等级 (Overall risk level): `{prediction['整体风险等级(overall_risk_level)']}`",
+        f"- 整体风险评分 (Overall score): `{prediction['整体风险评分(overall_score)']}`",
+        f"- 平均等位基因频率 (Mean AF): `{prediction['平均等位基因频率(mean_af)']}`",
+        f"- 高风险变异数 (High-risk variants): `{prediction['高风险变异数(high_risk_variant_count)']}` / `{prediction['分析变异总数(variant_count)']}`",
         "",
-        "## Top Predicted Risks",
+        "## 预测的高风险疾病 (Top Predicted Risks)",
     ]
-    if prediction["predictions"]:
-        for item in prediction["predictions"]:
-            lines.append(f"- {item['disease']}: score `{item['score']}`")
+    if prediction["疾病预测列表(predictions)"]:
+        for item in prediction["疾病预测列表(predictions)"]:
+            lines.append(f"- {item['预测疾病名称(disease)']}: 得分(score) `{item['预测得分(score)']}`")
     else:
-        lines.append("- No known pathogenic risks found in ClinVar database.")
+        lines.append("- 在ClinVar数据库中未发现已知的致病风险 (No known pathogenic risks found in ClinVar database).")
         
-    if prediction.get("pathogenic_variants"):
+    if prediction.get("致病性变异详情(pathogenic_variants)"):
         lines.append("")
-        lines.append("## Pathogenic Variants Detected")
-        for pv in prediction["pathogenic_variants"]:
-            lines.append(f"- SNP: `{pv['snp']}` | Disease: `{pv['disease']}` | Significance: `{pv['sig']}`")
+        lines.append("## 检测到的致病性变异 (Pathogenic Variants Detected)")
+        for pv in prediction["致病性变异详情(pathogenic_variants)"]:
+            lines.append(f"- 变异位点(SNP): `{pv['变异位点(snp)']}` | 相关疾病(Disease): `{pv['相关疾病(disease)']}` | 临床显著性(Significance): `{pv['临床显著性(sig)']}`")
 
     lines += [
         "",
-        "## Node Records",
-        "- Full node-level records are written to `pipeline_node_records.json` in the output directory.",
+        "## 节点运行记录 (Node Records)",
+        "- 完整的节点级别记录已写入输出目录中的 `pipeline_node_records.json` 文件 (Full node-level records are written to `pipeline_node_records.json` in the output directory).",
         "",
     ]
     report_path.write_text("\n".join(lines), encoding="utf-8")
@@ -1149,7 +1321,7 @@ def main() -> int:
     parser.add_argument("--ref", required=False, help="Reference genome FASTA(.gz) path (can be passed via env REF)")
     parser.add_argument("--outdir", required=False, help="Output directory (can be passed via env OUTDIR)")
     parser.add_argument("--sample-id", default="sample1", help="Sample ID")
-    parser.add_argument("--threads", type=int, default=8, help="Thread count")
+    parser.add_argument("--threads", type=int, default=os.cpu_count() or 8, help="Thread count (defaults to system CPU count)")
     parser.add_argument("--min-read-length", type=int, default=50, help="Minimum read length after trimming")
     parser.add_argument("--min-qscore", type=int, default=20, help="Minimum quality threshold for trimming")
     parser.add_argument("--max-n-rate", type=float, default=0.1, help="Maximum allowed N base ratio in FASTQ")
@@ -1159,6 +1331,7 @@ def main() -> int:
     parser.add_argument("--run-cnn", action="store_true", help="Run NVScoreVariants + FilterVariantTranches instead of hard filtering")
     parser.add_argument("--fix-vcf-header", action="store_true", help="Fix VCF header for CNN variants", default=True)
     parser.add_argument("--cnn-resource", required=False, help="VCF file of known sites for FilterVariantTranches (defaults to --known-sites if provided)")
+    parser.add_argument("--gnomad", required=False, help="gnomAD VCF path for frequency filtering (defaults to ../gnomad/gnomad.exomes.r2.1.1.sites.vcf.bgz relative to fastq parent)")
     args = parser.parse_args()
 
     fastq_path = args.fastq or os.environ.get("FASTQ")
@@ -1466,10 +1639,12 @@ def main() -> int:
             if raw_variants == 0:
                 print(f"[INFO] No variants found in {raw_vcf}. Skipping CNN scoring and filtering.")
                 filtered_vcf = outdir / f"{sample}.variants.cnn_filtered.vcf"
+                import shutil
                 shutil.copy2(raw_vcf, filtered_vcf)
                 n_cnn = recorder.start("nv_score_variants", {"vcf": str(raw_vcf), "ref": str(ref_fa), "skipped": True})
                 recorder.finish(n_cnn, outputs={"annotated_vcf": str(filtered_vcf)})
                 n_filter = recorder.start("filter_variant_tranches", {"vcf": str(filtered_vcf), "skipped": True})
+                n_filter_final = n_filter
             else:
                 n_cnn = recorder.start("nv_score_variants", {"vcf": str(raw_vcf), "ref": str(ref_fa)})
                 
@@ -1560,6 +1735,7 @@ if __name__ == "__main__":
                 else:
                     try:
                         filtered_vcf = _filter_variant_tranches(gatk_bin, annotated_vcf, cnn_resource_path, sample, outdir, node=n_filter)
+                        n_filter_final = n_filter
                     except Exception as e:
                         print(f"[WARN] filter_variant_tranches failed ({e}). Falling back to hard filtering.")
                         n_filter["status"] = "error"
@@ -1567,14 +1743,16 @@ if __name__ == "__main__":
                         n_filter_hard = recorder.start("filter_variants_hard", {"vcf": str(raw_vcf)})
                         filtered_vcf = outdir / f"{sample}.variants.filtered.vcf"
                         filtered_vcf = _filter_variants_hard(gatk_bin, raw_vcf, sample, outdir, node=n_filter_hard)
+                        n_filter_final = n_filter_hard
 
         else:
-            n_filter = recorder.start("filter_variants_hard", {"vcf": str(raw_vcf)})
+            n_filter_hard = recorder.start("filter_variants_hard", {"vcf": str(raw_vcf)})
             filtered_vcf = outdir / f"{sample}.variants.filtered.vcf"
-            if n_filter.get("status") == "ok":
+            if n_filter_hard.get("status") == "ok":
                 print(f"[INFO] Node filter_variants_hard already completed. Skipping.")
             else:
-                filtered_vcf = _filter_variants_hard(gatk_bin, raw_vcf, sample, outdir, node=n_filter)
+                filtered_vcf = _filter_variants_hard(gatk_bin, raw_vcf, sample, outdir, node=n_filter_hard)
+            n_filter_final = n_filter_hard
             
         variants = _count_pass_variants(filtered_vcf)
         filtered_total = _count_vcf_variants(filtered_vcf)
@@ -1584,7 +1762,7 @@ if __name__ == "__main__":
             "pass_variants": variants,
         }
         recorder.finish(
-            n_filter,
+            n_filter_final,
             outputs={"filtered_vcf": str(filtered_vcf)},
             stats=filter_stats,
         )
@@ -1596,12 +1774,36 @@ if __name__ == "__main__":
             _inject_reference_header(filtered_vcf, ref_fa)
             recorder.finish(n_vcf_header_filtered, stats={"pass_variants": variants})
 
-        n_csv = recorder.start("convert_vcf_to_csv", {"vcf": str(filtered_vcf)})
+        # --- 新增 gnomAD 频率过滤节点 ---
+        gnomad_path_str = args.gnomad
+        if not gnomad_path_str:
+            # 默认路径为 fastq 文件的上一层文件夹同级文件夹 gnomad/gnomad.exomes.r2.1.1.sites.vcf.bgz
+            gnomad_path_str = str(fastq1.parent.parent / "gnomad" / "gnomad.exomes.r2.1.1.sites.vcf.bgz")
+            
+        gnomad_vcf_path = Path(gnomad_path_str)
+        rare_vcf = outdir / f"{sample}.variants.rare.vcf"
+        
+        n_gnomad = recorder.start("filter_gnomad_frequency", {"vcf": str(filtered_vcf), "gnomad": str(gnomad_vcf_path)})
+        if n_gnomad.get("status") == "ok":
+            print(f"[INFO] Node filter_gnomad_frequency already completed. Skipping.")
+        else:
+            if gnomad_vcf_path.exists():
+                print(f"[INFO] Filtering common variants using gnomAD: {gnomad_vcf_path}")
+                gnomad_stats = _filter_by_gnomad(filtered_vcf, gnomad_vcf_path, rare_vcf, max_af=0.01)
+                recorder.finish(n_gnomad, outputs={"rare_vcf": str(rare_vcf)}, stats=gnomad_stats)
+            else:
+                print(f"[WARN] gnomAD file not found at {gnomad_vcf_path}. Skipping gnomAD filtering.")
+                import shutil
+                shutil.copy2(filtered_vcf, rare_vcf)
+                recorder.finish(n_gnomad, outputs={"rare_vcf": str(rare_vcf)}, stats={"skipped": True})
+        # --------------------------------
+
+        n_csv = recorder.start("convert_vcf_to_csv", {"vcf": str(rare_vcf)})
         clinvar_path = Path(__file__).resolve().parent.parent / "openKnowledgeDB" / "clinvar" / "clinvar.vcf.gz"
         if n_csv.get("status") == "ok":
             print(f"[INFO] Node convert_vcf_to_csv already completed. Skipping.")
         else:
-            csv_stats = _vcf_to_csv(filtered_vcf, csv_file, clinvar_path=clinvar_path, dbsnp_path=Path(args.known_sites) if args.known_sites else None)
+            csv_stats = _vcf_to_csv(rare_vcf, csv_file, clinvar_path=clinvar_path, dbsnp_path=Path(args.known_sites) if args.known_sites else None)
             recorder.finish(n_csv, outputs={"csv": str(csv_file)}, stats=csv_stats)
 
         n_pred = recorder.start("disease_prediction_from_csv", {"csv": str(csv_file)})
@@ -1616,8 +1818,8 @@ if __name__ == "__main__":
                 n_pred,
                 outputs={"prediction_json": str(prediction_json)},
                 stats={
-                    "overall_risk_level": prediction["overall_risk_level"],
-                    "variant_count": prediction["variant_count"],
+                    "overall_risk_level": prediction["整体风险等级(overall_risk_level)"],
+                    "variant_count": prediction["分析变异总数(variant_count)"],
                 },
             )
 
@@ -1626,7 +1828,7 @@ if __name__ == "__main__":
         if n_report.get("status") == "ok":
             print(f"[INFO] Node generate_markdown_report already completed. Skipping.")
         else:
-            _write_report(report, fastq1, fastq2, ref_fa, filtered_vcf, csv_file, prediction, dedup_bam, variants, filter_method)
+            _write_report(report, fastq1, fastq2, ref_fa, rare_vcf, csv_file, prediction, dedup_bam, variants, filter_method)
             recorder.finish(n_report, outputs={"report": str(report)})
 
         n_cleanup = recorder.start("cleanup_temp_files", {"sam": str(sam)})
@@ -1639,7 +1841,7 @@ if __name__ == "__main__":
             "ok": True,
             "status": "ok",
             "output": [
-                {"vcf": str(filtered_vcf)},
+                {"vcf": str(rare_vcf)},
                 {"raw_vcf": str(raw_vcf)},
                 {"csv": str(csv_file)},
                 {"report": str(report)},
