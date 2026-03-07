@@ -199,6 +199,16 @@ def _run_with_progress(cmd: List[str], node: Optional[Dict[str, Any]] = None, cw
                     if m and recorder:
                         prog_val = float(m.group(1))
                         recorder.write_progress("running", int(prog_val))
+                # Spark 版本的进度通常不打印 ProgressMeter，而是打印 TaskSetManager 的进度
+                elif "TaskSetManager - Finished task" in line and recorder:
+                    # 例如: 19:20:06.405 INFO  TaskSetManager - Finished task 36.0 in stage 5.0 (TID 4076) in 63922 ms on 192.168.25.78 (executor driver) (37/1344)
+                    m = re.search(r"\((\d+)/(\d+)\)", line)
+                    if m:
+                        finished = int(m.group(1))
+                        total = int(m.group(2))
+                        if total > 0:
+                            prog_val = (finished * 100) / total
+                            recorder.write_progress("running", int(prog_val))
         finally:
             if log_fp:
                 log_fp.close()
