@@ -175,14 +175,34 @@ def _run_with_progress(cmd: List[str], node: Optional[Dict[str, Any]] = None, cw
             bufsize=1,
         )
         assert proc.stderr is not None
-        for line in proc.stderr:
-            sys.stderr.write(line)
-            # GATK typical progress line: 12:34:56.789 INFO  ProgressMeter - ... 5.0% ...
-            if "ProgressMeter" in line:
-                m = re.search(r"(\d+\.\d+)%", line)
-                if m and recorder:
-                    prog_val = float(m.group(1))
-                    recorder.write_progress("running", int(prog_val))
+        
+        # 准备日志文件，如果 recorder 存在则写到 outdir 下
+        log_fp = None
+        if recorder and hasattr(recorder, "outdir"):
+            log_path = recorder.outdir / "call_variants_gatk_haplotypecaller.stderr.log"
+            try:
+                log_fp = log_path.open("a", encoding="utf-8")
+                log_fp.write(f"\n--- {_now_iso()} ---\n")
+                log_fp.write(f"Command: {' '.join(cmd)}\n")
+            except Exception as e:
+                print(f"[WARN] Failed to open log file {log_path}: {e}", file=sys.stderr)
+        
+        try:
+            for line in proc.stderr:
+                sys.stderr.write(line)
+                if log_fp:
+                    log_fp.write(line)
+                    log_fp.flush()
+                # GATK typical progress line: 12:34:56.789 INFO  ProgressMeter - ... 5.0% ...
+                if "ProgressMeter" in line:
+                    m = re.search(r"(\d+\.\d+)%", line)
+                    if m and recorder:
+                        prog_val = float(m.group(1))
+                        recorder.write_progress("running", int(prog_val))
+        finally:
+            if log_fp:
+                log_fp.close()
+                
         proc.wait()
         if proc.returncode != 0:
             raise subprocess.CalledProcessError(proc.returncode, cmd)
@@ -1606,16 +1626,21 @@ def main() -> int:
         if n_call.get("status") == "ok":
             print(f"[INFO] Node call_variants_gatk_haplotypecaller already completed. Skipping.")
         else:
+            # HaplotypeCallerSpark 在高并发下容易不稳定 (Exit code 2/OOM/Queue issues)，
+            # 限制其默认最大并行度为 8（可通过环境变量 GATK_HC_SPARK_THREADS 覆盖）
+            spark_threads = int(os.environ.get("GATK_HC_SPARK_THREADS", min(args.threads, 8)))
             _run_with_progress(
                 [
                     gatk_bin,
-                    "HaplotypeCaller",
+                    "HaplotypeCallerSpark",
                     "-R",
                     str(ref_fa),
                     "-I",
                     str(dedup_bam),
                     "-O",
                     str(raw_vcf),
+                    "--spark-master",
+                    f"local[{spark_threads}]",
                 ],
                 node=n_call,
                 recorder=recorder
