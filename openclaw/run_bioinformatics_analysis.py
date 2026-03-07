@@ -1626,9 +1626,24 @@ def main() -> int:
         if n_call.get("status") == "ok":
             print(f"[INFO] Node call_variants_gatk_haplotypecaller already completed. Skipping.")
         else:
-            # HaplotypeCallerSpark 在高并发下容易不稳定 (Exit code 2/OOM/Queue issues)，
-            # 限制其默认最大并行度为 8（可通过环境变量 GATK_HC_SPARK_THREADS 覆盖）
-            spark_threads = int(os.environ.get("GATK_HC_SPARK_THREADS", min(args.threads, 8)))
+            # 动态计算适合 HaplotypeCallerSpark 的线程数
+            # Spark 在高并发下容易不稳定，因此需要结合 CPU 核心数和系统内存来综合判断
+            import psutil
+            total_memory_gb = psutil.virtual_memory().total / (1024 ** 3)
+            
+            # 经验法则：每个 Spark 线程建议预留至少 4-6 GB 内存以保证绝对稳定
+            # 1. 根据内存计算最大安全线程数
+            max_threads_by_mem = max(1, int(total_memory_gb / 6))
+            
+            # 2. 结合用户传入的线程数（默认是 CPU 总核数），取两者中的较小值
+            # 3. 为了绝对的稳定性，设置一个更严格的硬上限（8），因为之前在 14 核机器上出现过 OOM
+            calculated_spark_threads = min(args.threads, max_threads_by_mem, 8)
+            
+            # 允许通过环境变量强制覆盖
+            spark_threads = int(os.environ.get("GATK_HC_SPARK_THREADS", calculated_spark_threads))
+            
+            print(f"[INFO] HaplotypeCallerSpark: using {spark_threads} threads (CPU: {args.threads}, Mem: {total_memory_gb:.1f}GB)")
+            
             _run_with_progress(
                 [
                     gatk_bin,
