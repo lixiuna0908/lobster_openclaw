@@ -1852,7 +1852,12 @@ def fix_header(input_vcf, output_vcf):
 if __name__ == "__main__":
     fix_header(sys.argv[1], sys.argv[2])
 """)
-                    sp.run(["python3", str(fix_script), str(raw_vcf), str(fixed_vcf)], check=True)
+                    sp.run(
+                        ["python3", str(fix_script), str(raw_vcf), str(fixed_vcf)],
+                        check=True,
+                        stdout=sys.stderr,
+                        stderr=sys.stderr,
+                    )
                     raw_vcf = fixed_vcf
 
                 annotated_vcf = outdir / f"{sample}.variants.cnn_scored.vcf"
