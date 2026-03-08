@@ -27,3 +27,7 @@ dbsnp/
 gatk-4.6.2.0.zip
 li/
 gnomad/
+
+# 大型数据库文件（不推送）
+openKnowledgeDB/clinvar/clinvar.vcf.gz
+openKnowledgeDB/clinvar/clinvar.vcf.gz.tbi
