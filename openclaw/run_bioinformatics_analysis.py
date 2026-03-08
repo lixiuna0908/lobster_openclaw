@@ -11,7 +11,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TextIO
+from typing import Any, Callable, Dict, List, Literal, Optional, TextIO
 
 
 def _ensure_runtime_path() -> None:
@@ -800,6 +800,11 @@ def _run_nv_score_variants(
     _python_bin = str(Path(sys.executable).resolve().parent)
     _env["PATH"] = _python_bin + os.pathsep + _env.get("PATH", "")
     _run(cmd, node=node, stderr_log_path=outdir / "nv_score_variants.stderr.log", env=_env)
+    if not annotated_vcf.exists():
+        raise RuntimeError(
+            f"NVScoreVariants completed but output file not found: {annotated_vcf}. "
+            "Check nv_score_variants.stderr.log for Python/IndexError."
+        )
     return annotated_vcf
 
 
@@ -1028,7 +1033,29 @@ def _filter_by_gnomad(in_vcf: Path, gnomad_vcf: Path, out_vcf: Path, max_af: flo
     gnomad.close()
     return {"total": total_variants, "passed": passed_variants}
 
-def _vcf_to_csv(vcf_path: Path, csv_path: Path, clinvar_path: Optional[Path] = None, dbsnp_path: Optional[Path] = None) -> Dict[str, Any]:
+
+def _classify_clinvar_sig(clinvar_sig: str) -> Literal["pathogenic", "benign", "vus", ""]:
+    """Classify ClinVar significance for alignment with chen: pathogenic/benign/vus only; exclude Conflicting from pathogenic."""
+    sig = (clinvar_sig or "").strip().lower()
+    if not sig:
+        return ""
+    if "conflicting_classifications" in sig:
+        return "vus"
+    if ("pathogenic" in sig or "likely_pathogenic" in sig) and "benign" not in sig:
+        return "pathogenic"
+    if "benign" in sig or "likely_benign" in sig:
+        return "benign"
+    return "vus"
+
+
+def _vcf_to_csv(
+    vcf_path: Path,
+    csv_path: Path,
+    clinvar_path: Optional[Path] = None,
+    dbsnp_path: Optional[Path] = None,
+    write_rs_only: bool = True,
+) -> Dict[str, Any]:
+    """Convert VCF to CSV with ClinVar/risk_tag. When write_rs_only=True (default), only rows with rs ID are written, aligning with chen's variant set."""
     import csv
     
 
@@ -1135,26 +1162,24 @@ def _vcf_to_csv(vcf_path: Path, csv_path: Path, clinvar_path: Optional[Path] = N
             fieldnames=["snp_name", "chrom", "pos", "ref", "alt", "qual", "dp", "af", "clinvar_sig", "clinvar_disease", "risk_tag"],
         )
         writer.writeheader()
+        written = 0
         for r in rows:
-            sig_lower = r["clinvar_sig"].lower()
-            if "pathogenic" in sig_lower and "benign" not in sig_lower:
+            if write_rs_only:
+                snp = (r.get("snp_name") or "").strip()
+                if not snp.startswith("rs"):
+                    continue
+            clazz = _classify_clinvar_sig(r["clinvar_sig"])
+            if clazz == "pathogenic":
                 risk_tag = "high"
-            elif "likely_pathogenic" in sig_lower:
-                risk_tag = "high"
-            elif "uncertain_significance" in sig_lower:
-                risk_tag = "moderate"
-            elif "benign" in sig_lower:
+            elif clazz == "benign":
                 risk_tag = "low"
+            elif clazz == "vus":
+                risk_tag = "moderate"
             else:
                 risk_tag = "high" if r["af"] >= 0.3 or r["qual"] >= 100 else "moderate"
-            
-            writer.writerow(
-                {
-                    **r,
-                    "risk_tag": risk_tag,
-                }
-            )
-    return {"rows": len(rows)}
+            writer.writerow({**r, "risk_tag": risk_tag})
+            written += 1
+    return {"rows": written, "total_read": len(rows)}
 
 
 
@@ -1252,66 +1277,72 @@ def _translate_disease(disease_str: str) -> str:
             
     return " | ".join(translated_parts)
 
-def _predict_disease(csv_path: Path) -> Dict[str, Any]:
+def _predict_disease(csv_path: Path, filter_to_rs_only: bool = True) -> Dict[str, Any]:
+    """Build disease prediction from CSV. When filter_to_rs_only=True (default), only variants with rs ID are counted, aligning with chen's 总分析变异数 (e.g. 328480)."""
     import csv
 
     variant_count = 0
     high_risk_count = 0
     af_sum = 0.0
-    
+    pathogenic_count = 0
+    benign_count = 0
+    vus_count = 0
+
     pathogenic_variants = []
-    
+
     with csv_path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            snp_name = (row.get("snp_name") or "").strip()
+            if filter_to_rs_only and not snp_name.startswith("rs"):
+                continue
             variant_count += 1
             af = float(row.get("af") or 0.0)
             af_sum += af
             if (row.get("risk_tag") or "").lower() == "high":
                 high_risk_count += 1
-                
-            sig = (row.get("clinvar_sig") or "").lower()
-            if "pathogenic" in sig and "benign" not in sig:
+
+            clazz = _classify_clinvar_sig(row.get("clinvar_sig") or "")
+            if clazz == "pathogenic":
+                pathogenic_count += 1
                 pathogenic_variants.append({
                     "变异位点(snp)": row.get("snp_name"),
                     "相关疾病(disease)": _translate_disease(row.get("clinvar_disease", "Unknown")),
                     "临床显著性(sig)": row.get("clinvar_sig")
                 })
+            elif clazz == "benign":
+                benign_count += 1
+            elif clazz == "vus":
+                vus_count += 1
 
     mean_af = (af_sum / variant_count) if variant_count else 0.0
-    
+
     # If we have real pathogenic variants from ClinVar, use them for prediction
     if pathogenic_variants:
         disease_scores = {}
         for pv in pathogenic_variants:
-            # Extract English disease name from "Chinese(English)" or just "English"
             raw_disease = pv["相关疾病(disease)"]
-            # We can just use the raw disease string for counting, but we should strip the Chinese part if we want to group properly.
-            # Actually, since we already translated it, we can just use the translated string for grouping.
             diseases = [d.strip() for d in raw_disease.split("|") if d.strip() and "not provided" not in d.lower() and "not specified" not in d.lower() and "unknown" not in d.lower()]
             for d in diseases:
                 disease_scores[d] = disease_scores.get(d, 0) + 1
-        
+
         predictions = []
         for d, count in sorted(disease_scores.items(), key=lambda x: x[1], reverse=True):
             score = min(0.99, 0.8 + count * 0.05)
             predictions.append({"预测疾病名称(disease)": d, "预测得分(score)": round(score, 3)})
-            
+
         if not predictions:
-            # Fallback if diseases were all not_specified
             base = min(0.95, 0.15 + 0.55 * mean_af + 0.3 * (high_risk_count / max(1, variant_count)))
             predictions = [{"预测疾病名称(disease)": "发现遗传风险但ClinVar未指定疾病(Genetic Risk Identified - Disease Not Specified in ClinVar)", "预测得分(score)": round(base, 3)}]
-            
+
         overall_score = round(min(100, 70 + len(pathogenic_variants) * 5), 1)
         level = "high"
         base = overall_score / 100.0
     else:
-        # No pathogenic variants found in ClinVar
         predictions = []
         base = min(0.3, 0.05 + 0.1 * (high_risk_count / max(1, variant_count)))
         level = "low"
 
-    # 按分数从高到低排序
     predictions.sort(key=lambda x: x["预测得分(score)"], reverse=True)
 
     return {
@@ -1320,8 +1351,12 @@ def _predict_disease(csv_path: Path) -> Dict[str, Any]:
         "分析变异总数(variant_count)": variant_count,
         "高风险变异数(high_risk_variant_count)": high_risk_count,
         "平均等位基因频率(mean_af)": round(mean_af, 4),
+        "致病/可能致病变异数(pathogenic_count)": pathogenic_count,
+        "良性/可能良性变异数(benign_count)": benign_count,
+        "意义未明变异数(vus_count)": vus_count,
         "疾病预测列表(predictions)": predictions,
-        "致病性变异详情(pathogenic_variants)": pathogenic_variants
+        "致病性变异详情(pathogenic_variants)": pathogenic_variants,
+        "分析变异筛选说明(variant_count_note)": "仅统计带 rs ID 的变异 (与 chen 口径一致)" if filter_to_rs_only else "",
     }
 
 
@@ -1363,6 +1398,12 @@ def _write_report(
         f"- 整体风险评分 (Overall score): `{prediction['整体风险评分(overall_score)']}`",
         f"- 平均等位基因频率 (Mean AF): `{prediction['平均等位基因频率(mean_af)']}`",
         f"- 高风险变异数 (High-risk variants): `{prediction['高风险变异数(high_risk_variant_count)']}` / `{prediction['分析变异总数(variant_count)']}`",
+    ]
+    if prediction.get("分析变异筛选说明(variant_count_note)"):
+        lines.append(f"- 说明: {prediction['分析变异筛选说明(variant_count_note)']}")
+    if "致病/可能致病变异数(pathogenic_count)" in prediction:
+        lines.append(f"- ClinVar 临床分类 (仅统计有注释变异): 致病/可能致病 `{prediction['致病/可能致病变异数(pathogenic_count)']}`，良性/可能良性 `{prediction['良性/可能良性变异数(benign_count)']}`，意义未明 `{prediction['意义未明变异数(vus_count)']}`")
+    lines += [
         "",
         "## 预测的高风险疾病 (Top Predicted Risks)",
     ]
@@ -1815,29 +1856,47 @@ if __name__ == "__main__":
                     raw_vcf = fixed_vcf
 
                 annotated_vcf = outdir / f"{sample}.variants.cnn_scored.vcf"
-                if n_cnn.get("status") == "ok":
+                cnn_ok = False
+                if n_cnn.get("status") == "ok" and annotated_vcf.exists():
                     print(f"[INFO] Node nv_score_variants already completed. Skipping.")
+                    cnn_ok = True
                 else:
-                    annotated_vcf = _run_nv_score_variants(gatk_bin, raw_vcf, ref_fa, sample, outdir, node=n_cnn)
-                    recorder.finish(n_cnn, outputs={"annotated_vcf": str(annotated_vcf)})
+                    if n_cnn.get("status") == "ok" and not annotated_vcf.exists():
+                        print(f"[WARN] nv_score_variants marked ok but {annotated_vcf.name} missing. Re-running or falling back.")
+                        n_cnn["status"] = "error"
+                        n_cnn["error"] = "Output file not found (previous run may have failed silently)"
+                    if n_cnn.get("status") != "ok":
+                        try:
+                            annotated_vcf = _run_nv_score_variants(gatk_bin, raw_vcf, ref_fa, sample, outdir, node=n_cnn)
+                            recorder.finish(n_cnn, outputs={"annotated_vcf": str(annotated_vcf)})
+                            cnn_ok = True
+                        except Exception as e:
+                            print(f"[WARN] nv_score_variants failed ({e}). Falling back to hard filtering.")
+                            recorder.finish(n_cnn, status="error", error=str(e))
                 
-                n_filter = recorder.start("filter_variant_tranches", {"vcf": str(annotated_vcf), "resource": str(cnn_resource_path)})
-                filtered_vcf = outdir / f"{sample}.variants.cnn_filtered.vcf"
-
-                if n_filter.get("status") == "ok":
-                    print(f"[INFO] Node filter_variant_tranches already completed. Skipping.")
+                if not cnn_ok:
+                    n_filter_hard = recorder.start("filter_variants_hard", {"vcf": str(raw_vcf)})
+                    filtered_vcf = outdir / f"{sample}.variants.filtered.vcf"
+                    filtered_vcf = _filter_variants_hard(gatk_bin, raw_vcf, sample, outdir, node=n_filter_hard)
+                    n_filter_final = n_filter_hard
                 else:
-                    try:
-                        filtered_vcf = _filter_variant_tranches(gatk_bin, annotated_vcf, cnn_resource_path, sample, outdir, node=n_filter)
+                    n_filter = recorder.start("filter_variant_tranches", {"vcf": str(annotated_vcf), "resource": str(cnn_resource_path)})
+                    filtered_vcf = outdir / f"{sample}.variants.cnn_filtered.vcf"
+                    if n_filter.get("status") == "ok":
+                        print(f"[INFO] Node filter_variant_tranches already completed. Skipping.")
                         n_filter_final = n_filter
-                    except Exception as e:
-                        print(f"[WARN] filter_variant_tranches failed ({e}). Falling back to hard filtering.")
-                        n_filter["status"] = "error"
-                        n_filter["error"] = str(e)
-                        n_filter_hard = recorder.start("filter_variants_hard", {"vcf": str(raw_vcf)})
-                        filtered_vcf = outdir / f"{sample}.variants.filtered.vcf"
-                        filtered_vcf = _filter_variants_hard(gatk_bin, raw_vcf, sample, outdir, node=n_filter_hard)
-                        n_filter_final = n_filter_hard
+                    else:
+                        try:
+                            filtered_vcf = _filter_variant_tranches(gatk_bin, annotated_vcf, cnn_resource_path, sample, outdir, node=n_filter)
+                            n_filter_final = n_filter
+                        except Exception as e:
+                            print(f"[WARN] filter_variant_tranches failed ({e}). Falling back to hard filtering.")
+                            n_filter["status"] = "error"
+                            n_filter["error"] = str(e)
+                            n_filter_hard = recorder.start("filter_variants_hard", {"vcf": str(raw_vcf)})
+                            filtered_vcf = outdir / f"{sample}.variants.filtered.vcf"
+                            filtered_vcf = _filter_variants_hard(gatk_bin, raw_vcf, sample, outdir, node=n_filter_hard)
+                            n_filter_final = n_filter_hard
 
         else:
             n_filter_hard = recorder.start("filter_variants_hard", {"vcf": str(raw_vcf)})
@@ -1868,15 +1927,12 @@ if __name__ == "__main__":
             _inject_reference_header(filtered_vcf, ref_fa)
             recorder.finish(n_vcf_header_filtered, stats={"pass_variants": variants})
 
-        # --- 新增 gnomAD 频率过滤节点 ---
+        # --- 筛选步骤 1：gnomAD 频率过滤（与 chen 对齐需保证此步执行且参数一致）---
         gnomad_path_str = args.gnomad
         if not gnomad_path_str:
-            # 默认路径为 fastq 文件的上一层文件夹同级文件夹 gnomad/gnomad.exomes.r2.1.1.sites.vcf.bgz
             gnomad_path_str = str(fastq1.parent.parent / "gnomad" / "gnomad.exomes.r2.1.1.sites.vcf.bgz")
-            
         gnomad_vcf_path = Path(gnomad_path_str)
         rare_vcf = outdir / f"{sample}.variants.rare.vcf"
-        
         n_gnomad = recorder.start("filter_gnomad_frequency", {"vcf": str(filtered_vcf), "gnomad": str(gnomad_vcf_path)})
         if n_gnomad.get("status") == "ok":
             print(f"[INFO] Node filter_gnomad_frequency already completed. Skipping.")
@@ -1890,14 +1946,14 @@ if __name__ == "__main__":
                 import shutil
                 shutil.copy2(filtered_vcf, rare_vcf)
                 recorder.finish(n_gnomad, outputs={"rare_vcf": str(rare_vcf)}, stats={"skipped": True})
-        # --------------------------------
 
+        # --- 筛选步骤 2：VCF→CSV 时仅保留带 rs ID 的变异（与 chen 口径一致）---
         n_csv = recorder.start("convert_vcf_to_csv", {"vcf": str(rare_vcf)})
         clinvar_path = Path(__file__).resolve().parent.parent / "openKnowledgeDB" / "clinvar" / "clinvar.vcf.gz"
         if n_csv.get("status") == "ok":
             print(f"[INFO] Node convert_vcf_to_csv already completed. Skipping.")
         else:
-            csv_stats = _vcf_to_csv(rare_vcf, csv_file, clinvar_path=clinvar_path, dbsnp_path=Path(args.known_sites) if args.known_sites else None)
+            csv_stats = _vcf_to_csv(rare_vcf, csv_file, clinvar_path=clinvar_path, dbsnp_path=Path(args.known_sites) if args.known_sites else None, write_rs_only=True)
             recorder.finish(n_csv, outputs={"csv": str(csv_file)}, stats=csv_stats)
 
         n_pred = recorder.start("disease_prediction_from_csv", {"csv": str(csv_file)})

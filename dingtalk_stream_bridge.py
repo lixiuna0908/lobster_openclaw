@@ -62,6 +62,8 @@ LONG_RUNNING_PUSH_INTERVAL_SEC = 600  # 10 分钟
 STALE_RUNNING_WARN_THRESHOLD_SEC = 7200  # 2 小时
 # 若 running 节点超过此时长无 progress_updated_at 更新，视为「疑似已停滞」（秒）
 STALE_PROGRESS_NO_UPDATE_SEC = 300  # 5 分钟
+# 不报告进度的节点（如 NVScoreVariants、FilterVariantTranches 等），不参与「可能已停滞」检测
+NODES_WITHOUT_PROGRESS_UPDATES = frozenset({"nv_score_variants", "filter_variant_tranches", "filter_variants_hard"})
 # 钉钉单条消息文本上限约 4000 字符，整体 payload 约 20KB；超限会 413
 DINGTALK_MAX_CONTENT_LEN = 3500
 LOG_ALL_TOPICS = os.getenv("DINGTALK_STREAM_LOG_ALL_TOPICS", "1").strip() not in {"0", "false", "False"}
@@ -534,8 +536,9 @@ def _build_node_board_text(outdir_path: Path, total_started_at: float) -> str:
                         status_str = "⏳ running"
                 est_str = _node_estimate_str(name, fastq_total_bytes)
                 # 根据 progress_updated_at 判断该 running 节点是否疑似已停滞（无进度更新）
+                # 不报告进度的节点（如 nv_score_variants）不参与此检测
                 progress_updated_at = node.get("progress_updated_at")
-                if progress_updated_at:
+                if progress_updated_at and name not in NODES_WITHOUT_PROGRESS_UPDATES:
                     try:
                         t_updated = datetime.fromisoformat(str(progress_updated_at).replace("Z", "+00:00"))
                         if t_updated.tzinfo is None:
@@ -1059,7 +1062,9 @@ def _run_pipeline_async(session_key: str, state: SessionState) -> None:
                         last_node = nodes[-1] if isinstance(nodes, list) and len(nodes) > 0 else None
                         progress_stale = True
                         if isinstance(last_node, dict) and last_node.get("status") == "running":
-                            pau = last_node.get("progress_updated_at")
+                            if last_node.get("name") in NODES_WITHOUT_PROGRESS_UPDATES:
+                                progress_stale = False  # 不报告进度的节点不参与停滞检测
+                            pau = last_node.get("progress_updated_at") if progress_stale else None
                             if pau:
                                 try:
                                     t_updated = datetime.fromisoformat(str(pau).replace("Z", "+00:00"))
@@ -1239,7 +1244,9 @@ def _handle_message_impl(payload: Dict[str, Any]) -> None:
                     node_elapsed_sec = max(0.0, (datetime.now(timezone.utc) - t0).total_seconds())
                 except (ValueError, TypeError):
                     pass
-            pau = n.get("progress_updated_at") if n.get("status") == "running" else None
+            if n.get("status") == "running" and n.get("name") in NODES_WITHOUT_PROGRESS_UPDATES:
+                progress_stale = False  # 不报告进度的节点不参与停滞检测
+            pau = n.get("progress_updated_at") if n.get("status") == "running" and progress_stale else None
             if pau:
                 try:
                     t_updated = datetime.fromisoformat(str(pau).replace("Z", "+00:00"))

@@ -59,8 +59,10 @@ pnpm openclaw gateway --port 18789 --verbose
 **后台启动钉钉桥接：**
 
 ```bash
-cd /Users/work/000code/github && nohup ./run_dingtalk_stream_bridge.sh >> dingtalk_runtime/bridge.log 2>&1 &
+cd /Users/work/000code/github && mkdir -p dingtalk_runtime && nohup ./run_dingtalk_stream_bridge.sh >> dingtalk_runtime/bridge.log 2>&1 &
 ```
+
+（首次运行或目录被删后需先 `mkdir -p dingtalk_runtime`，否则重定向会报 no such file or directory。）
 
 ## 简化理解
 

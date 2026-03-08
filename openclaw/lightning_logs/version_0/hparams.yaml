@@ -83,8 +83,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                           gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                           AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                           aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                          Z2UKcQFYDwAAADE0MDM4MTUyOTIyMTAwOHECWAMAAABjcHVxA00AME50cQRRLoACXXEAWA8AAAAx
-                          NDAzODE1MjkyMjEwMDhxAWEuADAAAAAAAABiQEg+XY4xPn18JL6tktm9JrSwPXTq0L1LzM4+iXA2
+                          Z2UKcQFYDwAAADE0MDM2OTA5NDUzMTMxMnECWAMAAABjcHVxA00AME50cQRRLoACXXEAWA8AAAAx
+                          NDAzNjkwOTQ1MzEzMTJxAWEuADAAAAAAAABiQEg+XY4xPn18JL6tktm9JrSwPXTq0L1LzM4+iXA2
                           vpFqHzuJkgs+ET07vuEHNT7phOq81PDvvTWkl75x+ZI+EP9hPiF5QD4aMIY9lhFnvnUW1j2O6HW+
                           /4xwPannF700tBC97PoyvuW8zb3S2Lu+G/RXProXP77SZPI9K6ALPpVGZL5NHZm+UvpvvZYYIb6Z
                           QLQ9xEFVvX2cYTxO8qs9tS3EParLh72OWsi92B8hvaqGvL5CraW+rTShvgH2fz1OSXc+S5gvvqWr
@@ -970,8 +970,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                           gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                           AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                           aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                          Z2UKcQFYDwAAADE0MDM4MTUyOTIyODA0OHECWAMAAABjcHVxA00AAU50cQRRLoACXXEAWA8AAAAx
-                          NDAzODE1MjkyMjgwNDhxAWEuAAEAAAAAAADrhp67qDBju3CQzjqv39a8NEUtO+Z6hzpkVN68ZaCG
+                          Z2UKcQFYDwAAADE0MDM2OTA5NDUzMzQ1NnECWAMAAABjcHVxA00AAU50cQRRLoACXXEAWA8AAAAx
+                          NDAzNjkwOTQ1MzM0NTZxAWEuAAEAAAAAAADrhp67qDBju3CQzjqv39a8NEUtO+Z6hzpkVN68ZaCG
                           u6TtPDskP4y8hlwDPCkhAbvQ0m88TJEVvBbmpDskmX68f4KUvH9L6Lt/oVK8Bw9qvCV3ubz+iH+4
                           02GBvGWM07wgbyC97w5vvM8nBbxVIWS7gZwvuze6frwZinI8aPnKO9GhibthXVy8CVXHu9C/vrwU
                           IOq7Bk6BPFltbbykN4K86gTPOQo+r7vo18q8Dlv0vDE9mbtnOHS8slJKu3Gj6bz/vCe8H5jpvFTQ
@@ -1093,8 +1093,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                           gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                           AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                           aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                          Z2UKcQFYDwAAADE0MDM4MTUyOTIyMzcyOHECWAMAAABjcHVxA0oAAAwATnRxBFEugAJdcQBYDwAA
-                          ADE0MDM4MTUyOTIyMzcyOHEBYS4AAAwAAAAAAI5bQTvE0Li8a8XpPIcegrsQpas8ZrAHPNscHD3G
+                          Z2UKcQFYDwAAADE0MDM2OTA5NDUzMzU1MnECWAMAAABjcHVxA0oAAAwATnRxBFEugAJdcQBYDwAA
+                          ADE0MDM2OTA5NDUzMzU1MnEBYS4AAAwAAAAAAI5bQTvE0Li8a8XpPIcegrsQpas8ZrAHPNscHD3G
                           d6W8WvuHvNXqMjvaCY27j7jVPL/XDD2xCCq8RhJkvId8pjyRjNi8KwRyvcLZ1zxWCiY9QJGNvGtH
                           hTsiU0+8gmYMvS21yjwsQWw80hkJPLJvRT3rC/G8I1ADvFITFD1Gyco7ejYGvAyVATz5Djy9+5vG
                           vPRfkjwKeEc8SLzqO5He/zy+27m77hYmPdZSeb1BLJq85wArPRheCb0y/8A8H/f1uvIq8TwqVBQ9
@@ -56306,8 +56306,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                           gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                           AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                           aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                          Z2UKcQFYDwAAADE0MDM4MDk5MzAwMjk3NnECWAMAAABjcHVxA00AAU50cQRRLoACXXEAWA8AAAAx
-                          NDAzODA5OTMwMDI5NzZxAWEuAAEAAAAAAAAEHIi75H54u8uapru1Vpm45rRFu36Sq7sDxdu6HeDC
+                          Z2UKcQFYDwAAADE0MDM2OTA5NDUzOTEyMHECWAMAAABjcHVxA00AAU50cQRRLoACXXEAWA8AAAAx
+                          NDAzNjkwOTQ1MzkxMjBxAWEuAAEAAAAAAAAEHIi75H54u8uapru1Vpm45rRFu36Sq7sDxdu6HeDC
                           unV/H7ub+K+7rPkqu+B427p7ari7Fas9uy07GLs1DKq7PFZKu71pzLvs76a7ZHSbu3iMO7s05bm7
                           c/jYu8WvrrvMM5S7MASru0QHDLzKzsq7Ysj4ujo1Pbtoazi7THf8u0pntLt12pa7Qj92u9dfqruc
                           hrO7nfdNu5fwirv0bsq7THSuu754WrqH4EG6a8JUu+QghLtRTJi7vEaVu0Uxs7tk6Eu7ke1Xu+G3
@@ -56464,8 +56464,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                           gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                           AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                           aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                          Z2UKcQFYDwAAADE0MDM4MDk5Mjg4NjQ5NnECWAMAAABjcHVxA0oAAAYATnRxBFEugAJdcQBYDwAA
-                          ADE0MDM4MDk5Mjg4NjQ5NnEBYS4AAAYAAAAAAMIxEj3wpOk7NUSyPBy2VjvbrHc80jvlO0I7Hz1k
+                          Z2UKcQFYDwAAADE0MDM2OTA5NDUzOTIxNnECWAMAAABjcHVxA0oAAAYATnRxBFEugAJdcQBYDwAA
+                          ADE0MDM2OTA5NDUzOTIxNnEBYS4AAAYAAAAAAMIxEj3wpOk7NUSyPBy2VjvbrHc80jvlO0I7Hz1k
                           cMW8WrvTO8MLOzznigI8Zjr5uwgXgjzyvIg8WhM3PGc5g7y82Go8ShmKPD/kiLzWUzU9Ai5ePBKz
                           RrxyY7u8ibjJvA29Kjy3AKg8heFFPdiPADui3u88xh9DPYNJsjxUeyc9aOkavN9OlLyvyMM8rudH
                           PLBUZTvImo08t8epO6G+mbxrqYe8IzawOyByzDxwHhK8Q65BvIJba7w0rvy78JI2vdUyaz1VfI68
@@ -84083,8 +84083,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                           gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                           AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                           aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                          Z2UKcQFYDwAAADE0MDM4MDcyMjQ3MTEzNnECWAMAAABjcHVxA0uATnRxBFEugAJdcQBYDwAAADE0
-                          MDM4MDcyMjQ3MTEzNnEBYS6AAAAAAAAAALkNL7xmbqe8XEjOu98EXbwMuWG8BGT+u1GKurgAHem6
+                          Z2UKcQFYDwAAADE0MDM2OTA5ODk4MTI5NnECWAMAAABjcHVxA0uATnRxBFEugAJdcQBYDwAAADE0
+                          MDM2OTA5ODk4MTI5NnEBYS6AAAAAAAAAALkNL7xmbqe8XEjOu98EXbwMuWG8BGT+u1GKurgAHem6
                           uEI/vMm5XLzEduS75nw7vDgWkzjMJNq7ZiyVuxewebk6jQE783eSu0q+ObxWUE2846Kduwe2Dzxd
                           lzO7/f2yu4zYCbvNqWE7WAYtO+/gz7udA268CB5OvHa+QLt5VNK7cL6fvBOPR7pnpyG8Q3zEu0ug
                           /btb8qC74+ntu7/BpzvOdGK7h6WNu0g2MbyuWTK8LEG4u35n5budWj+835xEvBpWHTtQfIe8llBr
@@ -84219,8 +84219,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                   gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                   AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                   aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                  Z2UKcQFYDwAAADE0MDM4MDk5MzI0NDQ0OHECWAMAAABjcHVxA0sHTnRxBFEugAJdcQBYDwAAADE0
-                  MDM4MDk5MzI0NDQ0OHEBYS4HAAAAAAAAAAegaUKmmBBCxK6gP+FgcUDfNohBh8gavxTarr0=
+                  Z2UKcQFYDwAAADE0MDM2OTA5ODk4ODk0NHECWAMAAABjcHVxA0sHTnRxBFEugAJdcQBYDwAAADE0
+                  MDM2OTA5ODk4ODk0NHEBYS4HAAAAAAAAAAegaUKmmBBCxK6gP+FgcUDfNohBh8gavxTarr0=
               - 0
               - !!python/tuple
                 - 7
@@ -84236,8 +84236,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                   gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                   AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                   aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                  Z2UKcQFYDwAAADE0MDM4MDk5Mjk4MTY2NHECWAMAAABjcHVxA0sHTnRxBFEugAJdcQBYDwAAADE0
-                  MDM4MDk5Mjk4MTY2NHEBYS4HAAAAAAAAAEa3okG17+tDBjBoPxK5YUJ2nO5CzQ5CQOHclD8=
+                  Z2UKcQFYDwAAADE0MDM2OTA5ODk4OTcyOHECWAMAAABjcHVxA0sHTnRxBFEugAJdcQBYDwAAADE0
+                  MDM2OTA5ODk4OTcyOHEBYS4HAAAAAAAAAEa3okG17+tDBjBoPxK5YUJ2nO5CzQ5CQOHclD8=
               - 0
               - !!python/tuple
                 - 7
@@ -84253,8 +84253,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                   gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                   AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                   aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApMb25nU3RvcmFn
-                  ZQpxAVgPAAAAMTQwMzgwOTkzMzc1NzEycQJYAwAAAGNwdXEDSwFOdHEEUS6AAl1xAFgPAAAAMTQw
-                  MzgwOTkzMzc1NzEycQFhLgEAAAAAAAAAAAAAAAAAAAA=
+                  ZQpxAVgPAAAAMTQwMzY5MDk4OTkwMTEycQJYAwAAAGNwdXEDSwFOdHEEUS6AAl1xAFgPAAAAMTQw
+                  MzY5MDk4OTkwMTEycQFhLgEAAAAAAAAAAAAAAAAAAAA=
               - 0
               - !!python/tuple []
               - !!python/tuple []
@@ -84288,8 +84288,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                     gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                     AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                     aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                    Z2UKcQFYDwAAADE0MDM4MDk5MzM0MTc0NHECWAMAAABjcHVxA0sHTnRxBFEugAJdcQBYDwAAADE0
-                    MDM4MDk5MzM0MTc0NHEBYS4HAAAAAAAAAMzWgj8MtYs/D2aHP7z/fj8AL5Q/Gq6SPySseT8=
+                    Z2UKcQFYDwAAADE0MDM2OTA5ODk4MTM5MnECWAMAAABjcHVxA0sHTnRxBFEugAJdcQBYDwAAADE0
+                    MDM2OTA5ODk4MTM5MnEBYS4HAAAAAAAAAMzWgj8MtYs/D2aHP7z/fj8AL5Q/Gq6SPySseT8=
                 - 0
                 - !!python/tuple
                   - 7
@@ -84309,8 +84309,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                     gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                     AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                     aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                    Z2UKcQFYDwAAADE0MDM4MDk5MzM3NTg0MHECWAMAAABjcHVxA0sHTnRxBFEugAJdcQBYDwAAADE0
-                    MDM4MDk5MzM3NTg0MHEBYS4HAAAAAAAAAClHID0Y3MW9cEx4vaxGpb2tocs9caALPu1Zzz0=
+                    Z2UKcQFYDwAAADE0MDM2OTA5ODk4MjU5MnECWAMAAABjcHVxA0sHTnRxBFEugAJdcQBYDwAAADE0
+                    MDM2OTA5ODk4MjU5MnEBYS4HAAAAAAAAAClHID0Y3MW9cEx4vaxGpb2tocs9caALPu1Zzz0=
                 - 0
                 - !!python/tuple
                   - 7
@@ -84391,8 +84391,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                           gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                           AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                           aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                          Z2UKcQFYDwAAADE0MDM4MTc5NTczMjQ4MHECWAMAAABjcHVxA00YAU50cQRRLoACXXEAWA8AAAAx
-                          NDAzODE3OTU3MzI0ODBxAWEuGAEAAAAAAAD0xm4+XagCvSZtdL5MyO+9rpMmvvnGqz6pThQ9IlHk
+                          Z2UKcQFYDwAAADE0MDM2OTA5ODk5MDQ5NnECWAMAAABjcHVxA00YAU50cQRRLoACXXEAWA8AAAAx
+                          NDAzNjkwOTg5OTA0OTZxAWEuGAEAAAAAAAD0xm4+XagCvSZtdL5MyO+9rpMmvvnGqz6pThQ9IlHk
                           PWa4CL5YP0S+8wQ5vmyBnD3WVQA+goesvWJN7bs/UgQ+ZA6vvW4NO71WGNk8G73vvSejMb6UHe28
                           Tm28PBGHpT7NXgw+/TwhPjMerDycgQy+aHn1PMcGV71gblE8ZNL+Oq7Xdr21KYU+YdcXvo5gYz6n
                           JRc9uPYZPsHjjj6tiVw+e5+yvblbbj4Apv897PwtPlAkyD2thJO9sidNvjbu673FEfI9/aGIPdag
@@ -84434,8 +84434,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                           gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                           AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                           aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                          Z2UKcQFYDwAAADE0MDM4MTc5NTcyODY4OHECWAMAAABjcHVxA0soTnRxBFEugAJdcQBYDwAAADE0
-                          MDM4MTc5NTcyODY4OHEBYS4oAAAAAAAAAL11Aj7gLZ895A8xPhTuJj5sIU8+eksbPmOucTw946U9
+                          Z2UKcQFYDwAAADE0MDM2OTA5ODk5MTE2OHECWAMAAABjcHVxA0soTnRxBFEugAJdcQBYDwAAADE0
+                          MDM2OTA5ODk5MTE2OHEBYS4oAAAAAAAAAL11Aj7gLZ895A8xPhTuJj5sIU8+eksbPmOucTw946U9
                           IPgPPtOEJj7ZxjI+O9sYPgCg+z26dMA9WAjIPS8WLD4nbS4+mQIlPqImBj7/69899X3vPfoDHzud
                           Be89xr8EPpJlDz6ANyU+LGzYPcu14T2sU7U88VlUPpVem7xV+IA9JF8WPY6oIz5hxmU+dicePs4c
                           7j2ZXO49GHITPtty5z0=
@@ -84558,8 +84558,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                           gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                           AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                           aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                          Z2UKcQFYDwAAADE0MDM4MTc5NTcxMzY5NnECWAMAAABjcHVxA0pAcgcATnRxBFEugAJdcQBYDwAA
-                          ADE0MDM4MTc5NTcxMzY5NnEBYS5AcgcAAAAAAJaHubwIxKM8eqjKvFikbz1xCGG9kVYFPdxV/7zn
+                          Z2UKcQFYDwAAADE0MDM2OTA5ODk5MjkyOHECWAMAAABjcHVxA0pAcgcATnRxBFEugAJdcQBYDwAA
+                          ADE0MDM2OTA5ODk5MjkyOHEBYS5AcgcAAAAAAJaHubwIxKM8eqjKvFikbz1xCGG9kVYFPdxV/7zn
                           WY29rISsvSd6Zr1+LC29j2IGPc8Dij0omhy9gFo1PYdXlb0yV/A8a1QJPXcFtr1xt4q9lhp2vYbO
                           Ib1C9MW8eyeIvIe6OL1O0j29vKCDvfBXgTw/Vu286H+0PGIJ/buWvGu9/bdTvbWsiDquKRm95CJO
                           PKTkTrxfa6E8Ldubu94Y4zu7zv42SI+TvGHhW7staZK899k5PeVi9jtkbgY9Z7xMvSO2nT3Gdo29
@@ -118827,8 +118827,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                           gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                           AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                           aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                          Z2UKcQFYDwAAADE0MDM3NjYzODc2Nzg4OHECWAMAAABjcHVxA0soTnRxBFEugAJdcQBYDwAAADE0
-                          MDM3NjYzODc2Nzg4OHEBYS4oAAAAAAAAAOlDm7sbjdy7PqFfu9lnKj0tEqS7Zzfou0DLQrw+hxW7
+                          Z2UKcQFYDwAAADE0MDM2OTA2MjQ3MDAwMHECWAMAAABjcHVxA0soTnRxBFEugAJdcQBYDwAAADE0
+                          MDM2OTA2MjQ3MDAwMHEBYS4oAAAAAAAAAOlDm7sbjdy7PqFfu9lnKj0tEqS7Zzfou0DLQrw+hxW7
                           eL8ROzPx77tXUAe824ZavKNcMLwic7e7eLxdPF4nPTureO87Qfnou7U3P7z9Pl28u3tyOj2ZtLvV
                           zoA8wksDu3r4rLvoL5273LxMPCbadDwDZi48BjtwPPPjtrtzDgE8+mu7OpuID7sJN5e7WevrOwFw
                           HzzPxES8/l7Cu1KASbs=
@@ -118962,8 +118962,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                     gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                     AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                     aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                    Z2UKcQFYDwAAADE0MDM3NjYzODc2NzI2NHECWAMAAABjcHVxA0u8TnRxBFEugAJdcQBYDwAAADE0
-                    MDM3NjYzODc2NzI2NHEBYS68AAAAAAAAAOhr2r6ZBA8+4weXPlWEi70/zhu8EKdDPoJOQT3YYLW+
+                    Z2UKcQFYDwAAADE0MDM2OTA2MjQ2OTM3NnECWAMAAABjcHVxA0u8TnRxBFEugAJdcQBYDwAAADE0
+                    MDM2OTA2MjQ2OTM3NnEBYS68AAAAAAAAAOhr2r6ZBA8+4weXPlWEi70/zhu8EKdDPoJOQT3YYLW+
                     zyvQvmiEmT1aJr89XqLNveB5BT4KRu09hmeHPv6HSz75pAm+1GWYPliWgLz/Cp+8HYL4PT6CDz6Z
                     tl+9NIbrPaRumz7WrEM+UdLbPehjUL19WQA+9nxfPnXkW77VdCM9TGNnPqsmGD792YM++spqvjiZ
                     XT5kAwM+Mx3UuuB+HL7ztk8+MpmFPhTVYL7rzMa+wCOdPugnyDyJ+5W+sx3hPZIvkz4SOKc+5Gae
@@ -118998,8 +118998,8 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
                     gAKKCmz8nEb5IGqoUBkugAJN6QMugAJ9cQAoWBAAAABwcm90b2NvbF92ZXJzaW9ucQFN6QNYDQAA
                     AGxpdHRsZV9lbmRpYW5xAohYCgAAAHR5cGVfc2l6ZXNxA31xBChYBQAAAHNob3J0cQVLAlgDAAAA
                     aW50cQZLBFgEAAAAbG9uZ3EHSwR1dS6AAihYBwAAAHN0b3JhZ2VxAGN0b3JjaApGbG9hdFN0b3Jh
-                    Z2UKcQFYDwAAADE0MDM3NjYzODc2NzM2MHECWAMAAABjcHVxA0sETnRxBFEugAJdcQBYDwAAADE0
-                    MDM3NjYzODc2NzM2MHEBYS4EAAAAAAAAACp5Cb42iyY7zQ3RPQ4lAT0=
+                    Z2UKcQFYDwAAADE0MDM2OTA2MjQ2OTQ3MnECWAMAAABjcHVxA0sETnRxBFEugAJdcQBYDwAAADE0
+                    MDM2OTA2MjQ2OTQ3MnEBYS4EAAAAAAAAACp5Cb42iyY7zQ3RPQ4lAT0=
                 - 0
                 - !!python/tuple
                   - 4
@@ -119062,10 +119062,10 @@ model: !!python/object:scorevariants.models.gatk_1d.GATK_CNN_1D
   _state_dict_pre_hooks: !!python/object/apply:collections.OrderedDict
   - []
   training: true
-model_directory: /var/folders/n7/smlt_cnn6nbfplfmbl8z_qrm0000gn/T/NVScoreVariants_models14968814819588367435
-output_file: /Users/work/000code/github/test.scored.vcf
+model_directory: /var/folders/n7/smlt_cnn6nbfplfmbl8z_qrm0000gn/T/NVScoreVariants_models12742989153094607903
+output_file: /Users/work/000code/github/li/out/sample1.variants.cnn_scored.vcf
 ref_file: /Users/work/000code/github/refer_hg/hg38/hg38.fa
 seed: 724
 tensor_type: reference
-tmp_file: /var/folders/n7/smlt_cnn6nbfplfmbl8z_qrm0000gn/T/NVScoreVariants_tmp2479638815598449895.txt
-vcf_file: /Users/work/000code/github/test.vcf
+tmp_file: /var/folders/n7/smlt_cnn6nbfplfmbl8z_qrm0000gn/T/NVScoreVariants_tmp18062360803670095238.txt
+vcf_file: /Users/work/000code/github/li/out/sample1.variants.fixed.vcf
