@@ -12,6 +12,7 @@ FASTQ2_PATH="${FASTQ2_PATH:-}"
 REF_PATH="${REF_PATH:-${ROOT_DIR}/refer_hg/hg38/hg38.fa.gz}"
 OUTDIR_PATH="${OUTDIR_PATH:-${ROOT_DIR}/test_data/out}"
 KNOWN_SITES_PATH="${KNOWN_SITES_PATH:-${ROOT_DIR}/dbsnp/dbsnp_hg38.vcf.gz}"
+GNOMAD_PATH="${GNOMAD_PATH:-}"
 RUN_BQSR="${RUN_BQSR:-0}"
 RUN_CNN="${RUN_CNN:-1}"
 USE_LLM_TASK="${USE_LLM_TASK:-0}"
@@ -39,11 +40,11 @@ if [[ -z "${TOKEN}" ]]; then
   exit 1
 fi
 
-python3 - <<'PY' "$PAYLOAD_FILE" "$TOKEN" "$FASTQ_PATH" "$FASTQ2_PATH" "$REF_PATH" "$OUTDIR_PATH" "$KNOWN_SITES_PATH" "$RUN_BQSR" "$RUN_CNN" "$USE_LLM_TASK"
+python3 - <<'PY' "$PAYLOAD_FILE" "$TOKEN" "$FASTQ_PATH" "$FASTQ2_PATH" "$REF_PATH" "$OUTDIR_PATH" "$KNOWN_SITES_PATH" "$RUN_BQSR" "$RUN_CNN" "$USE_LLM_TASK" "$GNOMAD_PATH"
 import json
 import sys
 
-payload_file, token, fastq_path, fastq2_path, ref_path, outdir_path, known_sites_path, run_bqsr_str, run_cnn_str, use_llm_task_str = sys.argv[1:11]
+payload_file, token, fastq_path, fastq2_path, ref_path, outdir_path, known_sites_path, run_bqsr_str, run_cnn_str, use_llm_task_str, gnomad_path = sys.argv[1:12]
 use_llm_task = use_llm_task_str == "1"
 run_bqsr = run_bqsr_str == "1"
 run_cnn = run_cnn_str == "1"
@@ -95,6 +96,8 @@ if use_llm_task:
         base_cmd += " --run-bqsr"
     if run_cnn:
         base_cmd += " --run-cnn"
+    if gnomad_path:
+        base_cmd += f" --gnomad {gnomad_path}"
         
     pipeline = (
         "exec --json --shell "
@@ -112,6 +115,8 @@ else:
         base_cmd += " --run-bqsr"
     if run_cnn:
         base_cmd += " --run-cnn"
+    if gnomad_path:
+        base_cmd += f" --gnomad {gnomad_path}"
         
     pipeline = (
         "exec --json --shell "
@@ -124,7 +129,9 @@ payload = {
         "action": "run",
         "cwd": ".",
         "timeoutMs": 2147483647,  # 极大值，避免触发网关默认的 1 分钟超时
-        "maxStdoutBytes": 1048576,
+        # HaplotypeCallerSpark / GATK 在长任务中可能产生大量 stdout，
+        # 默认 1MB 容易触发 "output exceeded maxStdoutBytes"。
+        "maxStdoutBytes": 104857600,
         "pipeline": pipeline,
     },
 }

@@ -161,8 +161,16 @@ class NodeRecorder:
         return out
 
 
-def _run_with_progress(cmd: List[str], node: Optional[Dict[str, Any]] = None, cwd: Optional[Path] = None, recorder: Optional[Any] = None) -> int:
+def _run_with_progress(
+    cmd: List[str],
+    node: Optional[Dict[str, Any]] = None,
+    cwd: Optional[Path] = None,
+    recorder: Optional[Any] = None,
+    stderr_log_path: Optional[Path] = None,
+    env: Optional[Dict[str, str]] = None,
+) -> int:
     t0 = time.time()
+    _env = env if env is not None else None
     
     # 检查是否是 GATK HaplotypeCaller 这种支持进度输出的命令
     if any("HaplotypeCaller" in c for c in cmd):
@@ -171,6 +179,7 @@ def _run_with_progress(cmd: List[str], node: Optional[Dict[str, Any]] = None, cw
             stdout=sys.stderr,
             stderr=subprocess.PIPE,
             cwd=str(cwd) if cwd else None,
+            env=_env,
             text=True,
             bufsize=1,
         )
@@ -217,15 +226,45 @@ def _run_with_progress(cmd: List[str], node: Optional[Dict[str, Any]] = None, cw
         if proc.returncode != 0:
             raise subprocess.CalledProcessError(proc.returncode, cmd)
     else:
-        subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True, stdout=sys.stderr)
+        if stderr_log_path:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=sys.stderr,
+                stderr=subprocess.PIPE,
+                cwd=str(cwd) if cwd else None,
+                env=_env,
+                text=True,
+                bufsize=1,
+            )
+            assert proc.stderr is not None
+            try:
+                with stderr_log_path.open("w", encoding="utf-8") as log_fp:
+                    log_fp.write(f"--- {_now_iso()} ---\n")
+                    log_fp.write(f"Command: {' '.join(cmd)}\n\n")
+                    for line in proc.stderr:
+                        sys.stderr.write(line)
+                        log_fp.write(line)
+                        log_fp.flush()
+            finally:
+                proc.wait()
+                if proc.returncode != 0:
+                    raise subprocess.CalledProcessError(proc.returncode, cmd)
+        else:
+            subprocess.run(cmd, cwd=str(cwd) if cwd else None, env=_env, check=True, stdout=sys.stderr)
         
     elapsed_ms = int((time.time() - t0) * 1000)
     if node is not None:
         node["commands"].append({"cmd": cmd, "elapsed_ms": elapsed_ms})
     return elapsed_ms
 
-def _run(cmd: List[str], node: Optional[Dict[str, Any]] = None, cwd: Optional[Path] = None) -> int:
-    return _run_with_progress(cmd, node, cwd)
+def _run(
+    cmd: List[str],
+    node: Optional[Dict[str, Any]] = None,
+    cwd: Optional[Path] = None,
+    stderr_log_path: Optional[Path] = None,
+    env: Optional[Dict[str, str]] = None,
+) -> int:
+    return _run_with_progress(cmd, node, cwd, stderr_log_path=stderr_log_path, env=env)
 
 
 def _write_bwa_index_progress(outdir: Path, progress: int) -> None:
@@ -746,6 +785,7 @@ def _run_nv_score_variants(
 ) -> Path:
     """
     使用 GATK 内置的 1D CNN 模型对变异进行打分。
+    NVScoreVariants 会调用 python -c "import scorevariants"，需确保 PATH 中 python 来自 gatk 环境。
     """
     annotated_vcf = outdir / f"{sample}.variants.cnn_scored.vcf"
     cmd = [
@@ -755,7 +795,11 @@ def _run_nv_score_variants(
         "-R", str(ref_fa),
         "-O", str(annotated_vcf),
     ]
-    _run(cmd, node=node)
+    # 显式将当前 Python 所在目录置于 PATH 首位，确保 GATK 调用的 python 能找到 scorevariants
+    _env = os.environ.copy()
+    _python_bin = str(Path(sys.executable).resolve().parent)
+    _env["PATH"] = _python_bin + os.pathsep + _env.get("PATH", "")
+    _run(cmd, node=node, stderr_log_path=outdir / "nv_score_variants.stderr.log", env=_env)
     return annotated_vcf
 
 
@@ -840,7 +884,7 @@ def _filter_variant_tranches(
         "--info-key", "CNN_1D",
         "-O", str(filtered_vcf),
     ]
-    _run(cmd, node=node)
+    _run(cmd, node=node, stderr_log_path=outdir / "filter_variant_tranches.stderr.log")
     return filtered_vcf
 
 
@@ -879,7 +923,7 @@ def _filter_variants_hard(
         "--filter-name", "LOW_ReadPosRankSum",
         "--filter-expression", "ReadPosRankSum < -8.0",
     ]
-    _run(cmd, node=node)
+    _run(cmd, node=node, stderr_log_path=outdir / "filter_variants_hard.stderr.log")
     return filtered_vcf
 
 

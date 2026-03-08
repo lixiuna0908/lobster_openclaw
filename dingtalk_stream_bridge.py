@@ -24,6 +24,20 @@ except ImportError as exc:
         "缺少 dingtalk-stream 依赖，请先执行: pip install -r requirements.txt"
     ) from exc
 
+try:
+    import scorevariants  # noqa: F401
+except ImportError:
+    import sys
+    print(
+        "[WARN] scorevariants 未找到，NVScoreVariants 将无法运行；桥接继续启动。",
+        file=sys.stderr,
+        flush=True,
+    )
+    print(
+        "[HINT] 若需运行生信流程，请确保使用 bioconda 的 gatk4 创建环境，或手动安装 scorevariants。",
+        file=sys.stderr,
+        flush=True,
+    )
 
 ROOT_DIR = Path("/Users/work/000code/github")
 RUN_SCRIPT = ROOT_DIR / "run_bio_payload.sh"
@@ -48,9 +62,25 @@ LONG_RUNNING_PUSH_INTERVAL_SEC = 600  # 10 分钟
 STALE_RUNNING_WARN_THRESHOLD_SEC = 7200  # 2 小时
 # 若 running 节点超过此时长无 progress_updated_at 更新，视为「疑似已停滞」（秒）
 STALE_PROGRESS_NO_UPDATE_SEC = 300  # 5 分钟
+# 钉钉单条消息文本上限约 4000 字符，整体 payload 约 20KB；超限会 413
+DINGTALK_MAX_CONTENT_LEN = 3500
 LOG_ALL_TOPICS = os.getenv("DINGTALK_STREAM_LOG_ALL_TOPICS", "1").strip() not in {"0", "false", "False"}
 # run_bio_payload.sh 中未设置 KNOWN_SITES_PATH 时使用的默认路径，回复钉钉时需展示具体路径
 DEFAULT_KNOWN_SITES_PATH = str(ROOT_DIR / "dbsnp" / "dbsnp_hg38.vcf.gz")
+
+
+def _int_env(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, value)
+
+
+# 日志自动清理：默认保留 1 天日志，每小时执行一次清理
+LOG_RETENTION_DAYS = _int_env("DINGTALK_LOG_RETENTION_DAYS", 1, minimum=1)
+LOG_CLEANUP_INTERVAL_SEC = _int_env("DINGTALK_LOG_CLEANUP_INTERVAL_SEC", 3600, minimum=60)
 
 
 @dataclass
@@ -222,7 +252,16 @@ def _log_send_attempt(webhook: str, outcome: str, detail: str = "") -> None:
         pass
 
 
+def _truncate_for_dingtalk(content: str, max_len: int = DINGTALK_MAX_CONTENT_LEN) -> str:
+    """截断内容以避免钉钉 413 Request Entity Too Large。"""
+    if len(content) <= max_len:
+        return content
+    suffix = "\n\n… (内容已截断，完整内容见 dingtalk_runtime 日志)"
+    return content[: max_len - len(suffix)] + suffix
+
+
 def _send_dingtalk_text(chat_info: Dict[str, Any], content: str) -> None:
+    content = _truncate_for_dingtalk(content)
     webhook = chat_info.get("webhook", "")
     conversation_type = chat_info.get("conversationType")
     conversation_id = chat_info.get("conversationId")
@@ -832,6 +871,35 @@ def _dump_incoming_payload(raw: Any, payload: Dict[str, Any]) -> None:
         print(f"[WARN] payload dump failed: {exc}", flush=True)
 
 
+def _cleanup_old_runtime_logs() -> None:
+    """删除 dingtalk_runtime 下超过保留天数的 .log 日志文件。"""
+    cutoff = time.time() - LOG_RETENTION_DAYS * 86400
+    deleted = 0
+    for p in RUNTIME_DIR.glob("*.log"):
+        if not p.is_file():
+            continue
+        try:
+            if p.stat().st_mtime < cutoff:
+                p.unlink()
+                deleted += 1
+        except Exception as exc:
+            print(f"[WARN] log cleanup failed for {p}: {exc}", flush=True)
+    if deleted > 0:
+        print(
+            f"[INFO] log cleanup done: deleted={deleted}, retention_days={LOG_RETENTION_DAYS}",
+            flush=True,
+        )
+
+
+def _runtime_log_cleanup_loop() -> None:
+    while True:
+        try:
+            _cleanup_old_runtime_logs()
+        except Exception as exc:
+            print(f"[WARN] log cleanup loop error: {exc}", flush=True)
+        time.sleep(LOG_CLEANUP_INTERVAL_SEC)
+
+
 def _run_pipeline_async(session_key: str, state: SessionState) -> None:
     ts = time.strftime("%Y%m%d_%H%M%S")
     payload_path = RUNTIME_DIR / f"{session_key}_{ts}_payload.json"
@@ -873,6 +941,16 @@ def _run_pipeline_async(session_key: str, state: SessionState) -> None:
                 if t0.tzinfo is None:
                     t0 = t0.replace(tzinfo=timezone.utc)
                 start_ts = t0.timestamp()
+                
+            # 清理上次遗留的 running 状态，避免旧的时间戳污染初始看板
+            changed = False
+            if "nodes" in records and isinstance(records["nodes"], list):
+                for node in records["nodes"]:
+                    if isinstance(node, dict) and node.get("status") == "running":
+                        node["status"] = "fail"
+                        changed = True
+            if changed:
+                records_file.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
 
@@ -977,17 +1055,29 @@ def _run_pipeline_async(session_key: str, state: SessionState) -> None:
                     # 避免在完全没有开始时推送空状态
                     if not (stage_progress.get(2, 0) == 0 and sum(stage_progress.values()) == 0):
                         panel = _build_node_board_text(outdir_path, start_ts)
-                        # 若最后一节点长期处于 running 且无进度变化，提示可能已异常退出（流程实际未在跑但 curl 未返回，桥会持续每 10 分钟推送）
+                        # 仅当「running 超过 2 小时」且「近期无进度更新」时才提示可能已异常退出（避免进度在涨时误报）
+                        last_node = nodes[-1] if isinstance(nodes, list) and len(nodes) > 0 else None
+                        progress_stale = True
+                        if isinstance(last_node, dict) and last_node.get("status") == "running":
+                            pau = last_node.get("progress_updated_at")
+                            if pau:
+                                try:
+                                    t_updated = datetime.fromisoformat(str(pau).replace("Z", "+00:00"))
+                                    if t_updated.tzinfo is None:
+                                        t_updated = t_updated.replace(tzinfo=timezone.utc)
+                                    if (datetime.now(timezone.utc) - t_updated).total_seconds() <= STALE_PROGRESS_NO_UPDATE_SEC:
+                                        progress_stale = False
+                                except (ValueError, TypeError):
+                                    pass
                         if (
                             node_elapsed_sec >= STALE_RUNNING_WARN_THRESHOLD_SEC
-                            and isinstance(nodes, list)
-                            and len(nodes) > 0
-                            and isinstance(nodes[-1], dict)
-                            and nodes[-1].get("status") == "running"
+                            and isinstance(last_node, dict)
+                            and last_node.get("status") == "running"
+                            and progress_stale
                         ):
                             panel += (
-                                "\n\n⚠️ 该节点已连续运行超过 2 小时，若流程实际未在跑，可能是网关侧已异常退出、"
-                                "桥接子进程仍在等 curl 返回。请检查：1) 网关与 li/out 日志 2) 可重启钉钉桥以结束本轮轮询。"
+                                "\n\n⚠️ 该节点已连续运行超过 2 小时且超过 5 分钟无进度更新，可能已异常退出。"
+                                "请检查：1) 网关与 li/out 日志 2) 可重启钉钉桥以结束本轮轮询。"
                             )
                         _send_dingtalk_text(chat_info, panel)
                         last_reported_stages_hash = other_stages_hash
@@ -1134,10 +1224,11 @@ def _handle_message_impl(payload: Dict[str, Any]) -> None:
             except Exception:
                 pass
         panel = _build_node_board_text(outdir_path, start_ts)
-        # 若最后一节点长期 running，提示可能已异常退出
+        # 仅当「running 超过 2 小时」且「近期无进度更新」时才提示可能已异常退出（与轮询推送逻辑一致）
         records = _load_json(records_file)
         nodes = records.get("nodes") if isinstance(records, dict) else []
         node_elapsed_sec = 0.0
+        progress_stale = True
         if isinstance(nodes, list) and len(nodes) > 0 and isinstance(nodes[-1], dict):
             n = nodes[-1]
             if n.get("status") == "running" and n.get("started_at"):
@@ -1148,10 +1239,20 @@ def _handle_message_impl(payload: Dict[str, Any]) -> None:
                     node_elapsed_sec = max(0.0, (datetime.now(timezone.utc) - t0).total_seconds())
                 except (ValueError, TypeError):
                     pass
-        if node_elapsed_sec >= STALE_RUNNING_WARN_THRESHOLD_SEC:
+            pau = n.get("progress_updated_at") if n.get("status") == "running" else None
+            if pau:
+                try:
+                    t_updated = datetime.fromisoformat(str(pau).replace("Z", "+00:00"))
+                    if t_updated.tzinfo is None:
+                        t_updated = t_updated.replace(tzinfo=timezone.utc)
+                    if (datetime.now(timezone.utc) - t_updated).total_seconds() <= STALE_PROGRESS_NO_UPDATE_SEC:
+                        progress_stale = False
+                except (ValueError, TypeError):
+                    pass
+        if node_elapsed_sec >= STALE_RUNNING_WARN_THRESHOLD_SEC and progress_stale and isinstance(nodes, list) and len(nodes) > 0 and isinstance(nodes[-1], dict) and nodes[-1].get("status") == "running":
             panel += (
-                "\n\n⚠️ 该节点已连续运行超过 2 小时，若流程实际未在跑，可能是网关侧已异常退出、"
-                "桥接子进程仍在等 curl 返回。请检查：1) 网关与 li/out 日志 2) 可重启钉钉桥以结束本轮轮询。"
+                "\n\n⚠️ 该节点已连续运行超过 2 小时且超过 5 分钟无进度更新，可能已异常退出。"
+                "请检查：1) 网关与 li/out 日志 2) 可重启钉钉桥以结束本轮轮询。"
             )
         hint = f"（OUTDIR: {outdir_path}）\n\n" if state.fastq or state.outdir else ""
         _send_dingtalk_text(chat_info, hint + panel)
@@ -1288,6 +1389,8 @@ def main() -> int:
     if not DEFAULT_REPLY_WEBHOOK:
         print("[WARN] DINGTALK_REPLY_WEBHOOK 未设置，将依赖消息中的 sessionWebhook 回复。")
     print("[INFO] DingTalk Stream bridge starting...")
+    _cleanup_old_runtime_logs()
+    threading.Thread(target=_runtime_log_cleanup_loop, daemon=True).start()
     credential = dingtalk_stream.Credential(CLIENT_ID, CLIENT_SECRET)
     client = DebugDingTalkStreamClient(credential)
     client.register_callback_handler(dingtalk_stream.chatbot.ChatbotMessage.TOPIC, BioChatbotHandler())

@@ -6,6 +6,8 @@ ROOT="/Users/work/000code/github"
 CONDA_ENV="${DINGTALK_CONDA_ENV:-gatk}"
 
 cd "${ROOT}"
+# 保证日志重定向可用（如 nohup ... >> dingtalk_runtime/bridge.log 前需先有该目录）
+mkdir -p dingtalk_runtime
 
 # 确保 conda 可用；GFORTRAN 避免 gatk 环境 activate 时 gfortran 脚本报 unbound variable
 if [[ -d "$HOME/miniconda3/bin" ]]; then
@@ -19,6 +21,8 @@ conda run -n "${CONDA_ENV}" python3 -c 'import dingtalk_stream' 2>/dev/null || {
   echo "[INFO] 在 conda 环境 ${CONDA_ENV} 中安装 requirements.txt..."
   conda run -n "${CONDA_ENV}" pip install -q -r "${ROOT}/requirements.txt"
 }
+
+# scorevariants 检查已移至 dingtalk_stream_bridge.py 启动时（与桥接同进程，结果更可靠）
 
 # 这里用硬编码替换成你当前机器人的凭证（刚才日志中暴露的或者钉钉后台最新的）
 export DINGTALK_STREAM_CLIENT_ID="dingnidkqchjoxh6rr4j"
@@ -36,4 +40,4 @@ if [[ -z "${DINGTALK_REPLY_WEBHOOK:-}" ]]; then
 fi
 
 echo "[INFO] Starting DingTalk Stream bridge [conda env: ${CONDA_ENV}]..."
-exec env GFORTRAN="${GFORTRAN}" conda run -n "${CONDA_ENV}" python3 "${ROOT}/dingtalk_stream_bridge.py"
+exec env GFORTRAN="${GFORTRAN}" PYTHONUNBUFFERED=1 conda run -n "${CONDA_ENV}" python3 "${ROOT}/dingtalk_stream_bridge.py"
