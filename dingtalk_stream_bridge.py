@@ -432,6 +432,7 @@ PIPELINE_NODE_ORDER: List[str] = [
     "filter_variant_tranches",
     "filter_variants_hard",
     "ensure_filtered_vcf_reference_header",
+    "filter_gnomad_frequency",
     "convert_vcf_to_csv",
     "disease_prediction_from_csv",
     "generate_markdown_report",
@@ -493,8 +494,12 @@ def _build_node_board_text(outdir_path: Path, total_started_at: float) -> str:
             status = str(node.get("status") or "")
             _running_pct: Optional[int] = None
             if status == "ok":
-                status_str = "✅ ok"
-                est_str = "-"
+                if node.get("stats", {}).get("skipped"):
+                    status_str = "未开启"
+                    est_str = "-"
+                else:
+                    status_str = "✅ ok"
+                    est_str = "-"
             elif status == "running":
                 pct = node.get("progress")
                 total_bytes = node.get("total_bytes")
@@ -611,6 +616,7 @@ NODE_TO_STAGE: Dict[str, int] = {
     "nv_score_variants": 7,
     "filter_variant_tranches": 7,
     "ensure_filtered_vcf_reference_header": 7,
+    "filter_gnomad_frequency": 7,
     "convert_vcf_to_csv": 8,
     "disease_prediction_from_csv": 9,
     "generate_markdown_report": 10,
@@ -721,6 +727,19 @@ def _node_estimate_str(name: str, total_fastq_bytes: Optional[int] = None) -> st
 
 def _is_optional_node_disabled(node_name: str, seen_names: set) -> bool:
     """判断未出现在记录中的可选节点是否为「开关未开启」而非「待执行」。"""
+    if node_name == "raw_fastq_qc":
+        # 如果 raw_fastq_qc 没有执行过，且已经执行了 trim 节点，说明它未开启
+        if "trim_adapters_and_low_quality" in seen_names:
+            return True
+        return False
+    if node_name == "trim_adapters_and_low_quality" or node_name == "post_trim_qc":
+        if "align_reads_bwa_mem" in seen_names:
+            return True
+        return False
+    if node_name == "filter_gnomad_frequency":
+        if "convert_vcf_to_csv" in seen_names:
+            return True
+        return False
     if node_name in BQSR_OPTIONAL_NODES:
         # 已过 BQSR 插入点且未跑 BQSR → 未开启
         if "call_variants_gatk_haplotypecaller" in seen_names or "ensure_vcf_reference_header" in seen_names:

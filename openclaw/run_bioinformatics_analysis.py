@@ -1178,7 +1178,7 @@ def _vcf_to_csv(
             elif clazz == "vus":
                 risk_tag = "moderate"
             else:
-                risk_tag = "high" if r["af"] >= 0.3 else "moderate"
+                risk_tag = "clinvar无此数据"
             writer.writerow({**r, "risk_tag": risk_tag})
             written += 1
     return {"rows": written, "total_read": len(rows)}
@@ -1446,6 +1446,9 @@ def main() -> int:
     parser.add_argument("--run-bqsr", action="store_true", help="Run BQSR (requires --known-sites)")
     parser.add_argument("--known-sites", required=False, help="VCF file of known sites for BQSR")
     parser.add_argument("--run-cnn", action="store_true", help="Run NVScoreVariants + FilterVariantTranches instead of hard filtering")
+    parser.add_argument("--run-raw-qc", action="store_true", help="Run raw FASTQ QC (skipped by default)")
+    parser.add_argument("--run-trim", action="store_true", help="Run adapter trimming and post-trim QC (skipped by default)")
+    parser.add_argument("--run-gnomad", action="store_true", help="Run gnomAD frequency filtering (skipped by default)")
     parser.add_argument("--fix-vcf-header", action="store_true", help="Fix VCF header for CNN variants", default=True)
     parser.add_argument("--cnn-resource", required=False, help="VCF file of known sites for FilterVariantTranches (defaults to --known-sites if provided)")
     parser.add_argument("--gnomad", required=False, help="gnomAD VCF path for frequency filtering (defaults to ../gnomad/gnomad.exomes.r2.1.1.sites.vcf.bgz relative to fastq parent)")
@@ -1534,117 +1537,134 @@ def main() -> int:
         report = outdir / "disease_association_report.md"
         prediction_json = outdir / "disease_prediction.json"
 
-        n_raw_qc = recorder.start(
-            "raw_fastq_qc",
-            {
-                "fastq1": str(fastq1),
-                "fastq2": str(fastq2) if fastq2 else None,
-                "qc_gate": args.qc_gate,
-                "max_n_rate": args.max_n_rate,
-            },
-        )
-        qc_dir = outdir / "qc"
-        raw_qc_path = qc_dir / "raw_qc.json"
-        if n_raw_qc.get("status") == "ok":
-            print(f"[INFO] Node raw_fastq_qc already completed. Skipping.")
-            with open(raw_qc_path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            raw_qc = {
-                "raw_qc_path": str(raw_qc_path),
-                "r1": loaded["raw_fastq_qc"]["r1"],
-                "r2": loaded["raw_fastq_qc"]["r2"],
-                "overall": loaded["raw_fastq_qc"]["overall"],
-            }
+        if not args.run_raw_qc:
+            n_raw_qc = recorder.start("raw_fastq_qc", {"skipped": True})
+            recorder.finish(n_raw_qc, stats={"skipped": True})
+            print("[INFO] raw_fastq_qc node skipped by default. Use --run-raw-qc to enable it.")
         else:
-            raw_qc = _run_raw_qc(
-                fastq1,
-                fastq2,
-                outdir,
-                qc_gate=args.qc_gate,
-                max_n_rate=args.max_n_rate,
-                recorder=recorder,
-                node=n_raw_qc,
-            )
-            recorder.finish(
-                n_raw_qc,
-                outputs={"raw_qc_json": raw_qc["raw_qc_path"]},
-                stats={
-                    "total_reads": raw_qc["overall"]["total_reads"],
-                    "n_rate": raw_qc["overall"]["n_rate"],
+            n_raw_qc = recorder.start(
+                "raw_fastq_qc",
+                {
+                    "fastq1": str(fastq1),
+                    "fastq2": str(fastq2) if fastq2 else None,
+                    "qc_gate": args.qc_gate,
+                    "max_n_rate": args.max_n_rate,
                 },
             )
+            qc_dir = outdir / "qc"
+            raw_qc_path = qc_dir / "raw_qc.json"
+            if n_raw_qc.get("status") == "ok":
+                print(f"[INFO] Node raw_fastq_qc already completed. Skipping.")
+                with open(raw_qc_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                raw_qc = {
+                    "raw_qc_path": str(raw_qc_path),
+                    "r1": loaded["raw_fastq_qc"]["r1"],
+                    "r2": loaded["raw_fastq_qc"]["r2"],
+                    "overall": loaded["raw_fastq_qc"]["overall"],
+                }
+            else:
+                raw_qc = _run_raw_qc(
+                    fastq1,
+                    fastq2,
+                    outdir,
+                    qc_gate=args.qc_gate,
+                    max_n_rate=args.max_n_rate,
+                    recorder=recorder,
+                    node=n_raw_qc,
+                )
+                recorder.finish(
+                    n_raw_qc,
+                    outputs={"raw_qc_json": raw_qc["raw_qc_path"]},
+                    stats={
+                        "total_reads": raw_qc["overall"]["total_reads"],
+                        "n_rate": raw_qc["overall"]["n_rate"],
+                    },
+                )
 
-        n_trim = recorder.start(
-            "trim_adapters_and_low_quality",
-            {
-                "fastq1": str(fastq1),
-                "fastq2": str(fastq2) if fastq2 else None,
-                "min_read_length": args.min_read_length,
-                "min_qscore": args.min_qscore,
-            },
-        )
-        
-        clean_dir = outdir / "clean"
-        qc_dir = outdir / "qc"
-        clean_r1 = clean_dir / "clean_R1.fastq.gz"
-        clean_r2 = clean_dir / "clean_R2.fastq.gz"
-        fastp_json = qc_dir / "fastp.json"
-        fastp_html = qc_dir / "fastp.html"
-        
-        if n_trim.get("status") == "ok":
-            print(f"[INFO] Node trim_adapters_and_low_quality already completed. Skipping.")
-            clean_fastq1 = clean_r1.resolve()
-            clean_fastq2 = clean_r2.resolve() if fastq2 and clean_r2.exists() else None
+        if not args.run_trim:
+            n_trim = recorder.start("trim_adapters_and_low_quality", {"skipped": True})
+            recorder.finish(n_trim, stats={"skipped": True})
+            print("[INFO] trim_adapters_and_low_quality node skipped by default. Use --run-trim to enable it.")
+            clean_fastq1 = fastq1
+            clean_fastq2 = fastq2
         else:
-            trim_outputs = _trim_fastq(
-                fastp_bin,
-                fastq1,
-                fastq2,
-                outdir,
-                min_read_length=args.min_read_length,
-                min_qscore=args.min_qscore,
-                threads=args.threads,
-                node=n_trim,
+            n_trim = recorder.start(
+                "trim_adapters_and_low_quality",
+                {
+                    "fastq1": str(fastq1),
+                    "fastq2": str(fastq2) if fastq2 else None,
+                    "min_read_length": args.min_read_length,
+                    "min_qscore": args.min_qscore,
+                },
             )
-            clean_fastq1 = Path(trim_outputs["clean_r1"]).resolve()
-            clean_fastq2 = Path(trim_outputs["clean_r2"]).resolve() if trim_outputs["clean_r2"] else None
-            recorder.finish(
-                n_trim,
-                outputs={
+            
+            clean_dir = outdir / "clean"
+            qc_dir = outdir / "qc"
+            clean_r1 = clean_dir / "clean_R1.fastq.gz"
+            clean_r2 = clean_dir / "clean_R2.fastq.gz"
+            fastp_json = qc_dir / "fastp.json"
+            fastp_html = qc_dir / "fastp.html"
+            
+            if n_trim.get("status") == "ok":
+                print(f"[INFO] Node trim_adapters_and_low_quality already completed. Skipping.")
+                clean_fastq1 = clean_r1.resolve()
+                clean_fastq2 = clean_r2.resolve() if fastq2 and clean_r2.exists() else None
+            else:
+                trim_outputs = _trim_fastq(
+                    fastp_bin,
+                    fastq1,
+                    fastq2,
+                    outdir,
+                    min_read_length=args.min_read_length,
+                    min_qscore=args.min_qscore,
+                    threads=args.threads,
+                    node=n_trim,
+                )
+                clean_fastq1 = Path(trim_outputs["clean_r1"]).resolve()
+                clean_fastq2 = Path(trim_outputs["clean_r2"]).resolve() if trim_outputs["clean_r2"] else None
+                recorder.finish(
+                    n_trim,
+                    outputs={
+                        "clean_r1": str(clean_fastq1),
+                        "clean_r2": str(clean_fastq2) if clean_fastq2 else "",
+                        "fastp_json": trim_outputs["fastp_json"],
+                        "fastp_html": trim_outputs["fastp_html"],
+                    },
+                )
+
+        if not args.run_trim:
+            n_post_trim_qc = recorder.start("post_trim_qc", {"skipped": True})
+            recorder.finish(n_post_trim_qc, stats={"skipped": True})
+            print("[INFO] post_trim_qc node skipped by default. Use --run-trim to enable it.")
+        else:
+            n_post_trim_qc = recorder.start(
+                "post_trim_qc",
+                {
                     "clean_r1": str(clean_fastq1),
-                    "clean_r2": str(clean_fastq2) if clean_fastq2 else "",
-                    "fastp_json": trim_outputs["fastp_json"],
-                    "fastp_html": trim_outputs["fastp_html"],
+                    "clean_r2": str(clean_fastq2) if clean_fastq2 else None,
                 },
             )
-
-        n_post_trim_qc = recorder.start(
-            "post_trim_qc",
-            {
-                "clean_r1": str(clean_fastq1),
-                "clean_r2": str(clean_fastq2) if clean_fastq2 else None,
-            },
-        )
-        qc_dir = outdir / "qc"
-        post_trim_qc_json = qc_dir / "post_trim_qc.json"
-        if n_post_trim_qc.get("status") == "ok":
-            print(f"[INFO] Node post_trim_qc already completed. Skipping.")
-            with open(post_trim_qc_json, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            post_trim_qc = {
-                "post_qc_path": str(post_trim_qc_json),
-                "overall": loaded["post_trim_qc"]["overall"],
-            }
-        else:
-            post_trim_qc = _run_post_trim_qc(raw_qc, clean_fastq1, clean_fastq2, outdir)
-            recorder.finish(
-                n_post_trim_qc,
-                outputs={"post_trim_qc_json": post_trim_qc["post_qc_path"]},
-                stats={
-                    "read_retention": post_trim_qc["overall"]["read_retention"],
-                    "n_rate_delta": post_trim_qc["overall"]["n_rate_delta"],
-                },
-            )
+            qc_dir = outdir / "qc"
+            post_trim_qc_json = qc_dir / "post_trim_qc.json"
+            if n_post_trim_qc.get("status") == "ok":
+                print(f"[INFO] Node post_trim_qc already completed. Skipping.")
+                with open(post_trim_qc_json, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                post_trim_qc = {
+                    "post_qc_path": str(post_trim_qc_json),
+                    "overall": loaded["post_trim_qc"]["overall"],
+                }
+            else:
+                post_trim_qc = _run_post_trim_qc(raw_qc, clean_fastq1, clean_fastq2, outdir)
+                recorder.finish(
+                    n_post_trim_qc,
+                    outputs={"post_trim_qc_json": post_trim_qc["post_qc_path"]},
+                    stats={
+                        "read_retention": post_trim_qc["overall"]["read_retention"],
+                        "n_rate_delta": post_trim_qc["overall"]["n_rate_delta"],
+                    },
+                )
 
         rg = f"@RG\\tID:{sample}\\tSM:{sample}\\tPL:ILLUMINA"
         bwa_cmd = [bwa_bin, "mem", "-t", str(args.threads), "-R", rg, str(ref_fa), str(clean_fastq1)]
@@ -1934,26 +1954,37 @@ if __name__ == "__main__":
             _inject_reference_header(filtered_vcf, ref_fa)
             recorder.finish(n_vcf_header_filtered, stats={"pass_variants": variants})
 
-        # --- 筛选步骤 1：gnomAD 频率过滤（与 chen 对齐需保证此步执行且参数一致）---
-        gnomad_path_str = args.gnomad
-        if not gnomad_path_str:
-            gnomad_path_str = str(fastq1.parent.parent / "gnomad" / "gnomad.exomes.r2.1.1.sites.vcf.bgz")
-        gnomad_vcf_path = Path(gnomad_path_str)
+        # --- 筛选步骤 1：gnomAD 频率过滤（默认跳过）---
         rare_vcf = outdir / f"{sample}.variants.rare.vcf"
-        n_gnomad = recorder.start("filter_gnomad_frequency", {"vcf": str(filtered_vcf), "gnomad": str(gnomad_vcf_path)})
-        if n_gnomad.get("status") == "ok":
-            print(f"[INFO] Node filter_gnomad_frequency already completed. Skipping.")
-        else:
-            if gnomad_vcf_path.exists():
-                print(f"[INFO] gnomAD filter RUNNING: {gnomad_vcf_path} (max_af=0.01)", file=sys.stderr)
-                gnomad_stats = _filter_by_gnomad(filtered_vcf, gnomad_vcf_path, rare_vcf, max_af=0.01)
-                recorder.finish(n_gnomad, outputs={"rare_vcf": str(rare_vcf)}, stats=gnomad_stats)
-                print(f"[INFO] gnomAD filter DONE: rare_vcf={rare_vcf}", file=sys.stderr)
+        
+        if not args.run_gnomad:
+            n_gnomad = recorder.start("filter_gnomad_frequency", {"skipped": True})
+            if n_gnomad.get("status") == "ok":
+                print(f"[INFO] Node filter_gnomad_frequency already completed. Skipping.")
             else:
-                print(f"[WARN] gnomAD file not found at {gnomad_vcf_path}. Skipping gnomAD filtering.", file=sys.stderr)
+                print(f"[INFO] gnomAD filter SKIPPED by default. Copying filtered VCF directly. Use --run-gnomad to enable it.", file=sys.stderr)
                 import shutil
                 shutil.copy2(filtered_vcf, rare_vcf)
                 recorder.finish(n_gnomad, outputs={"rare_vcf": str(rare_vcf)}, stats={"skipped": True})
+        else:
+            gnomad_path_str = args.gnomad
+            if not gnomad_path_str:
+                gnomad_path_str = str(fastq1.parent.parent / "gnomad" / "gnomad.exomes.r2.1.1.sites.vcf.bgz")
+            gnomad_vcf_path = Path(gnomad_path_str)
+            n_gnomad = recorder.start("filter_gnomad_frequency", {"vcf": str(filtered_vcf), "gnomad": str(gnomad_vcf_path)})
+            if n_gnomad.get("status") == "ok":
+                print(f"[INFO] Node filter_gnomad_frequency already completed. Skipping.")
+            else:
+                if gnomad_vcf_path.exists():
+                    print(f"[INFO] gnomAD filter RUNNING: {gnomad_vcf_path} (max_af=0.01)", file=sys.stderr)
+                    gnomad_stats = _filter_by_gnomad(filtered_vcf, gnomad_vcf_path, rare_vcf, max_af=0.01)
+                    recorder.finish(n_gnomad, outputs={"rare_vcf": str(rare_vcf)}, stats=gnomad_stats)
+                    print(f"[INFO] gnomAD filter DONE: rare_vcf={rare_vcf}", file=sys.stderr)
+                else:
+                    print(f"[WARN] gnomAD file not found at {gnomad_vcf_path}. Skipping gnomAD filtering.", file=sys.stderr)
+                    import shutil
+                    shutil.copy2(filtered_vcf, rare_vcf)
+                    recorder.finish(n_gnomad, outputs={"rare_vcf": str(rare_vcf)}, stats={"skipped": True})
 
         # --- 筛选步骤 2：VCF→CSV 时仅保留带 rs ID 的变异（与 chen 口径一致）---
         n_csv = recorder.start("convert_vcf_to_csv", {"vcf": str(rare_vcf)})
