@@ -1031,7 +1031,9 @@ def _filter_by_gnomad(in_vcf: Path, gnomad_vcf: Path, out_vcf: Path, max_af: flo
                     passed_variants += 1
 
     gnomad.close()
-    return {"total": total_variants, "passed": passed_variants}
+    filtered_out = total_variants - passed_variants
+    print(f"[INFO] gnomAD frequency filter completed: total={total_variants}, passed={passed_variants}, filtered_out={filtered_out} (max_af={max_af})", file=sys.stderr)
+    return {"total": total_variants, "passed": passed_variants, "filtered_out": filtered_out}
 
 
 def _classify_clinvar_sig(clinvar_sig: str) -> Literal["pathogenic", "benign", "vus", ""]:
@@ -1176,7 +1178,7 @@ def _vcf_to_csv(
             elif clazz == "vus":
                 risk_tag = "moderate"
             else:
-                risk_tag = "high" if r["af"] >= 0.3 or r["qual"] >= 100 else "moderate"
+                risk_tag = "high" if r["af"] >= 0.3 else "moderate"
             writer.writerow({**r, "risk_tag": risk_tag})
             written += 1
     return {"rows": written, "total_read": len(rows)}
@@ -1943,11 +1945,12 @@ if __name__ == "__main__":
             print(f"[INFO] Node filter_gnomad_frequency already completed. Skipping.")
         else:
             if gnomad_vcf_path.exists():
-                print(f"[INFO] Filtering common variants using gnomAD: {gnomad_vcf_path}")
+                print(f"[INFO] gnomAD filter RUNNING: {gnomad_vcf_path} (max_af=0.01)", file=sys.stderr)
                 gnomad_stats = _filter_by_gnomad(filtered_vcf, gnomad_vcf_path, rare_vcf, max_af=0.01)
                 recorder.finish(n_gnomad, outputs={"rare_vcf": str(rare_vcf)}, stats=gnomad_stats)
+                print(f"[INFO] gnomAD filter DONE: rare_vcf={rare_vcf}", file=sys.stderr)
             else:
-                print(f"[WARN] gnomAD file not found at {gnomad_vcf_path}. Skipping gnomAD filtering.")
+                print(f"[WARN] gnomAD file not found at {gnomad_vcf_path}. Skipping gnomAD filtering.", file=sys.stderr)
                 import shutil
                 shutil.copy2(filtered_vcf, rare_vcf)
                 recorder.finish(n_gnomad, outputs={"rare_vcf": str(rare_vcf)}, stats={"skipped": True})
