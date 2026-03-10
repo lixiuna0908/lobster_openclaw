@@ -40,6 +40,9 @@ if [[ -z "${TOKEN}" ]]; then
   exit 1
 fi
 
+# Ensure gatk env has psutil for run_bioinformatics_analysis.py (HaplotypeCaller memory sizing).
+conda run -n gatk pip install -q -r "${ROOT_DIR}/openclaw/requirements_bio.txt"
+
 python3 - <<'PY' "$PAYLOAD_FILE" "$TOKEN" "$FASTQ_PATH" "$FASTQ2_PATH" "$REF_PATH" "$OUTDIR_PATH" "$KNOWN_SITES_PATH" "$RUN_BQSR" "$RUN_CNN" "$USE_LLM_TASK" "$GNOMAD_PATH"
 import json
 import sys

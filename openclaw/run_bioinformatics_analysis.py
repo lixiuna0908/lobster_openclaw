@@ -1745,9 +1745,12 @@ def main() -> int:
         else:
             # 动态计算适合 HaplotypeCallerSpark 的线程数
             # Spark 在高并发下容易不稳定，因此需要结合 CPU 核心数和系统内存来综合判断
-            import psutil
-            total_memory_gb = psutil.virtual_memory().total / (1024 ** 3)
-            
+            try:
+                import psutil
+                total_memory_gb = psutil.virtual_memory().total / (1024 ** 3)
+            except ImportError:
+                total_memory_gb = 16.0  # 保守默认，缺 psutil 时仍可继续跑
+
             # 经验法则：每个 Spark 线程建议预留至少 4-6 GB 内存以保证绝对稳定
             # 1. 根据内存计算最大安全线程数
             max_threads_by_mem = max(1, int(total_memory_gb / 6))
