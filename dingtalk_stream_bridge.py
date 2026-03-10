@@ -63,7 +63,7 @@ STALE_RUNNING_WARN_THRESHOLD_SEC = 7200  # 2 小时
 # 若 running 节点超过此时长无 progress_updated_at 更新，视为「疑似已停滞」（秒）
 STALE_PROGRESS_NO_UPDATE_SEC = 300  # 5 分钟
 # 不报告进度的节点（如 NVScoreVariants、FilterVariantTranches 等），不参与「可能已停滞」检测
-NODES_WITHOUT_PROGRESS_UPDATES = frozenset({"nv_score_variants", "filter_variant_tranches", "filter_variants_hard"})
+NODES_WITHOUT_PROGRESS_UPDATES = frozenset({"align_reads_bwa_mem", "sort_bam_samtools", "mark_duplicates", "haplotype_caller", "nv_score_variants", "filter_variant_tranches", "filter_variants_hard"})
 # 钉钉单条消息文本上限约 4000 字符，整体 payload 约 20KB；超限会 413
 DINGTALK_MAX_CONTENT_LEN = 3500
 LOG_ALL_TOPICS = os.getenv("DINGTALK_STREAM_LOG_ALL_TOPICS", "1").strip() not in {"0", "false", "False"}
@@ -533,7 +533,7 @@ def _build_node_board_text(outdir_path: Path, total_started_at: float) -> str:
                         # 避免长时间卡在 99%
                         if _running_pct >= 99 and _elapsed > (_est_h * 3600):
                             # 如果实际时间已经超过预计时间，让它停在 99% 但加个提示，或者干脆不显示百分比
-                            status_str = f"⏳ running (已超时)"
+                            status_str = f"⏳ running 99% (处理中)"
                         else:
                             status_str = f"⏳ running {_running_pct}%"
                     else:
