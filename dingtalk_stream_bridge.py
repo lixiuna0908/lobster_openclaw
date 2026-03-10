@@ -506,6 +506,23 @@ def _build_node_board_text(outdir_path: Path, total_started_at: float) -> str:
                 progress_bytes = node.get("progress_bytes")
                 if pct is not None:
                     pct = max(0, min(100, int(pct)))
+                    # 未完成前不显示 100%，避免与「已完成」混淆；GATK 多阶段时上一阶段 100% 后下一阶段会从 0% 开始，0% 时用时间估算避免长时间显示 0%
+                    if pct >= 100:
+                        pct = 99
+                    elif pct == 0:
+                        _elapsed = 0.0
+                        _started = node.get("started_at")
+                        if _started:
+                            try:
+                                t0 = datetime.fromisoformat(_started.replace("Z", "+00:00"))
+                                if t0.tzinfo is None:
+                                    t0 = t0.replace(tzinfo=timezone.utc)
+                                _elapsed = max(0.0, (datetime.now(timezone.utc) - t0).total_seconds())
+                            except (ValueError, TypeError):
+                                pass
+                        _est_h = _node_estimate_hours(name, fastq_total_bytes)
+                        if _elapsed > 60 and _est_h > 0:
+                            pct = min(99, int((_elapsed / (_est_h * 3600)) * 100))
                     status_str = f"⏳ running {pct}%"
                     _running_pct = pct
                 elif total_bytes is not None and progress_bytes is not None and int(total_bytes) > 0:
